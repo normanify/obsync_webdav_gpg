@@ -2,5 +2,9 @@
   "1.0.0": {
     "minAppVersion": "0.15.0",
     "description": "Initial release"
+  },
+  "1.0.1": {
+    "minAppVersion": "0.15.0",
+    "description": "Add chunked upload for large files (<90MB configurable) to support Nextcloud"
   }
 }
