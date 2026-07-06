@@ -1,4 +1,4 @@
-# Obsync WebDAV GPG — End-to-End Encrypted Sync for Obsidian
+# WebDAV GPG Sync
 
 **Encrypt your Obsidian vault and sync to any WebDAV cloud service. The cloud provider never sees your plaintext data.**
 
