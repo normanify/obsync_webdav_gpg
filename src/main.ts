@@ -640,8 +640,7 @@ export default class ObsyncPlugin extends Plugin {
           try {
             const content = new Uint8Array(await this.app.vault.readBinary(localFile));
             await this.yieldToUI();
-        const contentSha = await this.computeContentSha256(content);
-        await this.cacheShaForFile(vaultPath, contentSha);
+            const contentSha = await this.computeContentSha256(content);
             await this.cacheShaForFile(entry.vaultPath, contentSha);
             const syncEntry = this.syncManifest.files[entry.vaultPath];
 
@@ -925,6 +924,7 @@ export default class ObsyncPlugin extends Plugin {
         const content = new Uint8Array(await this.app.vault.readBinary(file));
         await this.yieldToUI();
         const contentSha = await this.computeContentSha256(content);
+        await this.cacheShaForFile(vaultPath, contentSha);
         const remotePath = await this.vaultPathToRemote(vaultPath);
         const parentDir = remotePath.contains('/') ? remotePath.substring(0, remotePath.lastIndexOf('/')) : '';
         if (parentDir) await this.syncClient.ensureDirectory(parentDir);
