@@ -1,6 +1,6 @@
 # WebDAV GPG Sync
 
-**🔐 文件内容 + 文件名，全部加密。服务器看到的只有乱码。AES-256-GCM + RSA 4096，端到端加密同步到任何 WebDAV。**
+**File content + filenames — both encrypted. The server sees only random garbage. AES-256-GCM + RSA 4096, end-to-end encrypted sync to any WebDAV.**
 
 ## Key Features
 
@@ -8,7 +8,7 @@
 
 Most sync solutions (Obsidian Sync, iCloud, Dropbox, etc.) rely on cloud-side trust — the provider **can** read your data. **WebDAV GPG Sync uses end-to-end encryption.** All encryption happens locally; only ciphertext is sent to WebDAV:
 
-- **✅ 文件名也加密** — 不只是文件内容，**每个文件夹名和文件名**都用 AES-256-GCM 独立加密，Base64URL 编码。服务器看到的只有随机字符串，完全无法知道你在编辑什么文件
+- **✅ Filenames are encrypted too** — Not just file content: **every folder and file name** is independently encrypted with AES-256-GCM and Base64URL-encoded. The server sees only random strings and has no idea what files you're editing
 - **File content encryption** — **OpenPGP RSA 4096-bit** public key encryption, each file stored as binary ciphertext
 - **Directory structure hidden** — The full folder hierarchy is mapped to an equal-depth encrypted path. The cloud cannot reconstruct your folder layout
 - **Private key never uploaded** — Your private key stays in local Obsidian config. Only the public key is needed to encrypt uploads
