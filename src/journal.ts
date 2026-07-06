@@ -20,7 +20,7 @@ export class JournalManager {
     this.path = path;
     try {
       const content = await adapter.read(path);
-      const data = JSON.parse(content);
+      const data = JSON.parse(content) as { entries?: unknown[] };
       this.entries = (data.entries || []) as JournalEntry[];
       this.idCounter = this.entries.length;
     } catch {

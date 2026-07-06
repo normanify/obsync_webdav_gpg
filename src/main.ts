@@ -151,7 +151,7 @@ export default class ObsyncPlugin extends Plugin {
             // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
             const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
             const shellPath = this.app.vault.adapter.getFullPath(file.path);
-            electron.shell.openPath(shellPath);
+            void electron.shell.openPath(shellPath);
           } catch (e) {
             console.error('[on-demand] openWithDefaultApp failed:', e);
             new Notice('Failed to open file externally');
@@ -183,7 +183,7 @@ export default class ObsyncPlugin extends Plugin {
                 try {
                   // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
                   const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
-                  electron.shell.openPath(this.app.vault.adapter.getFullPath(file.path));
+                  void electron.shell.openPath(this.app.vault.adapter.getFullPath(file.path));
                 } catch { /* ignore */ }
               }
               new Notice(`Downloaded: ${file.name}`);
@@ -588,7 +588,7 @@ export default class ObsyncPlugin extends Plugin {
       // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
       const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
       if (!electron?.shell?.openPath) return;
-      this._origShellOpenPath = electron.shell.openPath.bind(electron.shell) as (path: string) => Promise<string>;
+      this._origShellOpenPath = electron.shell.openPath.bind(electron.shell);
       electron.shell.openPath = async (filePath: string): Promise<string> => {
         if (this.settings.onDemand) {
           const vaultBase = this.app.vault.adapter.getFullPath('/');
@@ -1036,7 +1036,7 @@ export default class ObsyncPlugin extends Plugin {
             await this.cacheShaForFile(vaultPath, currentSha);
             if (currentSha === syncEntry.localSha256) {
               try {
-                await this.app.fileManager.trashFile(localFile);
+                await this.app.vault.delete(localFile);
                 localDel++;
               } catch (e) {
                 console.error(`Failed to delete local ${vaultPath}:`, e);

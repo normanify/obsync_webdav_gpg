@@ -41,7 +41,6 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-deprecated -- display() still works; getSettingDefinitions migration deferred
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
@@ -300,10 +299,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Restore from WebDAV')
       .setDesc('Download and decrypt all files from WebDAV, rebuilding vault state')
-      .addButton(btn => btn
-        .setButtonText('Restore Now')
-        // eslint-disable-next-line @typescript-eslint/no-deprecated -- setWarning supported, setDestructive unavailable in this Obsidian version
-        .setWarning()
-        .onClick(() => this.plugin.restoreFromWebDAV()));
+      .addButton(btn => {
+        btn.setButtonText('Restore Now')
+          .onClick(() => this.plugin.restoreFromWebDAV());
+        btn.buttonEl.addClass('mod-warning');
+      });
   }
 }
