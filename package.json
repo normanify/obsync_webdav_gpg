@@ -1,0 +1,24 @@
+{
+  "name": "obsync-webdav-gpg",
+  "version": "1.0.0",
+  "description": "Obsidian plugin for GPG-encrypted WebDAV sync",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "lint": "eslint src/"
+  },
+  "keywords": ["obsidian", "plugin", "webdav", "gpg", "encryption"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.20.0",
+    "obsidian": "^1.4.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "openpgp": "^5.11.0"
+  }
+}
