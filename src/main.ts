@@ -934,7 +934,12 @@ export default class ObsyncPlugin extends Plugin {
         if (this.isExcluded(vaultPath)) continue;
 
         const syncEntry = this.syncManifest.files[vaultPath];
-        if (!wasNewPath && syncEntry && syncEntry.etag === remoteEtag) continue;
+        if (!wasNewPath && syncEntry && syncEntry.etag === remoteEtag) {
+          // When on-demand is off, still download if local file is a 0‑byte placeholder
+          if (this.settings.onDemand) continue;
+          const localFile = this.app.vault.getAbstractFileByPath(vaultPath);
+          if (!(localFile instanceof TFile) || localFile.stat.size !== 0) continue;
+        }
 
         const shortName = vaultPath.split('/').pop();
         this.setStatus(`Pulling: ${shortName}`);
@@ -1000,6 +1005,13 @@ export default class ObsyncPlugin extends Plugin {
               const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
               this.syncManifest.files[vaultPath] = { remotePath, etag: newEtag || '', localMtime: mtime, localSha256: remoteSha };
             } else if (currentSha === syncEntry.localSha256) {
+              await this.writeFileToVault(vaultPath, decrypted);
+              await this.yieldToUI();
+              const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
+              this.syncManifest.files[vaultPath] = { remotePath, etag: newEtag || '', localMtime: mtime, localSha256: remoteSha };
+              pulled++;
+            } else if (!syncEntry.localSha256 && localFile.stat.size === 0) {
+              // 0‑byte placeholder from on‑demand mode → overwrite directly
               await this.writeFileToVault(vaultPath, decrypted);
               await this.yieldToUI();
               const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
