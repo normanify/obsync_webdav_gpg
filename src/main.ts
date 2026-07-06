@@ -650,6 +650,19 @@ export default class ObsyncPlugin extends Plugin {
         remotePathToVault.set(entry.remotePath, vp);
       }
 
+      /* Download remote manifest for SHA-based download skip */
+      const remoteShaByVaultPath = new Map<string, string>();
+      try {
+        const rm = await this.downloadManifestFromRemote();
+        if (rm) {
+          for (const [vp, e] of Object.entries(rm.files || {})) {
+            if (e.localSha256) remoteShaByVaultPath.set(vp, e.localSha256);
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to load remote manifest for SHA comparison:', e);
+      }
+
       /* ── PULL (Remote → Local) ── */
       for (const [remotePath, remoteEtag] of remoteFiles) {
         let vaultPath = remotePathToVault.get(remotePath);
@@ -661,14 +674,31 @@ export default class ObsyncPlugin extends Plugin {
           wasNewPath = true;
         }
         this.log(`[pull] ${vaultPath}`);
-        const shortName = vaultPath.split('/').pop();
-        this.setStatus(`Pulling: ${shortName}`);
-        await this.yieldToUI();
 
         if (this.isExcluded(vaultPath)) continue;
 
         const syncEntry = this.syncManifest.files[vaultPath];
         if (!wasNewPath && syncEntry && syncEntry.etag === remoteEtag) continue;
+
+        /* Check if local file matches remote manifest SHA — skip download entirely */
+        if (wasNewPath) {
+          const localFile = this.app.vault.getAbstractFileByPath(vaultPath);
+          const expectedSha = remoteShaByVaultPath.get(vaultPath);
+          if (expectedSha && localFile instanceof TFile) {
+            const localSha = await this.computeContentSha256(new Uint8Array(await this.app.vault.readBinary(localFile)));
+            if (localSha === expectedSha) {
+              this.log(`[pull] skip download ${vaultPath} — SHA matches remote manifest`);
+              const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
+              this.syncManifest.files[vaultPath] = { remotePath, etag: remoteEtag, localMtime: mtime, localSha256: localSha };
+              continue;
+            }
+          }
+        }
+
+        const shortName = vaultPath.split('/').pop();
+        this.setStatus(`Pulling: ${shortName}`);
+        await this.yieldToUI();
+
         this.log(`[pull] downloading ${vaultPath} — wasNewPath=${wasNewPath} hasEntry=${!!syncEntry}${syncEntry ? ` etagMatch=${syncEntry.etag === remoteEtag} (local=${syncEntry.etag}, remote=${remoteEtag})` : ''}`);
 
         try {
