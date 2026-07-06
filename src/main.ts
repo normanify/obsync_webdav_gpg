@@ -852,7 +852,7 @@ export default class ObsyncPlugin extends Plugin {
             await this.cacheShaForFile(vaultPath, currentSha);
             if (currentSha === syncEntry.localSha256) {
               try {
-                await this.app.fileManager.trashFile(localFile);
+                await this.app.vault.delete(localFile);
                 localDel++;
               } catch (e) {
                 console.error(`Failed to delete local ${vaultPath}:`, e);
@@ -868,7 +868,7 @@ export default class ObsyncPlugin extends Plugin {
         if (!remoteDirs.has(syncEntry.remotePath)) {
           const localDir = this.app.vault.getAbstractFileByPath(vaultDir);
           if (localDir instanceof TFolder) {
-            try { await this.app.fileManager.trashFile(localDir); localDel++; }
+            try { await this.app.vault.delete(localDir); localDel++; }
             catch (e) { console.error(`Failed to delete local dir ${vaultDir}:`, e); }
           }
           delete this.syncManifest.dirs[vaultDir];
