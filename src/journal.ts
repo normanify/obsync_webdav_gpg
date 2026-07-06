@@ -1,3 +1,5 @@
+import { type DataAdapter } from 'obsidian';
+
 export type JournalEntryType = 'file_deleted' | 'dir_deleted' | 'file_updated';
 
 export interface JournalEntry {
@@ -10,16 +12,16 @@ export interface JournalEntry {
 export class JournalManager {
   private entries: JournalEntry[] = [];
   private path = '';
-  private adapter: any = null;
+  private adapter: DataAdapter | null = null;
   private idCounter = 0;
 
-  async load(adapter: any, path: string): Promise<void> {
+  async load(adapter: DataAdapter, path: string): Promise<void> {
     this.adapter = adapter;
     this.path = path;
     try {
-      const content = await this.adapter.read(path);
+      const content = await adapter.read(path);
       const data = JSON.parse(content);
-      this.entries = data.entries || [];
+      this.entries = (data.entries || []) as JournalEntry[];
       this.idCounter = this.entries.length;
     } catch {
       this.entries = [];
@@ -28,7 +30,7 @@ export class JournalManager {
   }
 
   async save(): Promise<void> {
-    if (!this.path) return;
+    if (!this.path || !this.adapter) return;
     try {
       await this.adapter.write(this.path, JSON.stringify({ version: 1, entries: this.entries }, null, 2));
     } catch (e) {
@@ -43,7 +45,7 @@ export class JournalManager {
       vaultPath,
       timestamp: Date.now(),
     });
-    this.save();
+    void this.save();
   }
 
   getPending(): JournalEntry[] {
@@ -53,7 +55,7 @@ export class JournalManager {
   clearCompleted(completedIds: Set<string>): void {
     const before = this.entries.length;
     this.entries = this.entries.filter(e => !completedIds.has(e.id));
-    if (this.entries.length !== before) this.save();
+    if (this.entries.length !== before) void this.save();
   }
 
   getDeletedDirs(): Set<string> {

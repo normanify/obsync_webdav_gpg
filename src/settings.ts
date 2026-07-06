@@ -43,7 +43,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'WebDAV GPG Sync' });
+    new Setting(containerEl).setName('WebDAV GPG Sync').setHeading();
 
     new Setting(containerEl).setName('WebDAV Configuration').setHeading();
 

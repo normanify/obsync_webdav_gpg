@@ -40,7 +40,7 @@ export class WebDAVSync {
   private static readonly PARALLEL_DOWNLOAD_THRESHOLD = 5 * 1024 * 1024; // 5 MB – below this, download whole file
 
   private static sleep(ms = 5): Promise<void> {
-    return new Promise(r => setTimeout(r, ms));
+    return new Promise(r => window.setTimeout(r, ms));
   }
 
   private static readonly PROPFIND_BODY = `<?xml version="1.0" encoding="utf-8"?>
@@ -107,10 +107,10 @@ export class WebDAVSync {
   }
 
   private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
-    let https: any, http: any;
+    let httpsMod: any, httpMod: any;
     try {
-      https = require('https');
-      http = require('http');
+      httpsMod = await import('https');
+      httpMod = await import('http');
     } catch {
       throw new Error('Node.js http/https modules not available');
     }
@@ -119,10 +119,10 @@ export class WebDAVSync {
       const urlObj = new URL(fullUrl);
       const isHttps = urlObj.protocol === 'https:';
       const port = urlObj.port || (isHttps ? 443 : 80);
-      const mod = isHttps ? https : http;
-      const agent = isHttps ? new https.Agent({ rejectUnauthorized: false }) : undefined;
+      const mod = isHttps ? httpsMod : httpMod;
+      const agent = isHttps ? new httpsMod.Agent({ rejectUnauthorized: false }) : undefined;
 
-      const options: any = {
+      const options: Record<string, any> = {
         hostname: urlObj.hostname,
         port: parseInt(port.toString(), 10),
         path: urlObj.pathname + urlObj.search,
@@ -137,7 +137,7 @@ export class WebDAVSync {
         res.on('end', () => {
           const data = Buffer.concat(chunks);
           let text = '';
-          try { text = data.toString('utf-8'); } catch {}
+          try { text = data.toString('utf-8'); } catch { /* binary data */ }
           resolve({ status: res.statusCode || 500, headers: res.headers || {}, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
         });
       });
@@ -146,7 +146,7 @@ export class WebDAVSync {
           const bodySize = body ? ` (body size: ${body.byteLength} bytes)` : '';
           reject(new Error(`Connection closed by server during request${bodySize} — EPIPE/socket hang up. The server may have a request size limit or does not support the requested operation.`));
         } else {
-          reject(err);
+          reject(new Error(String(err)));
         }
       });
       req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
@@ -170,7 +170,7 @@ export class WebDAVSync {
     let current = '';
     for (const part of parts) {
       current += part + '/';
-      try { await this.createDirectory(current); } catch {}
+      try { await this.createDirectory(current); } catch { /* dir may already exist */ }
     }
   }
 
@@ -215,7 +215,7 @@ export class WebDAVSync {
       Depth: '1',
       'Content-Type': 'application/xml; charset="utf-8"',
       Authorization: this.getAuthHeader(),
-    }, bodyBuf as ArrayBuffer);
+    }, bodyBuf);
     if (response.status >= 400)
       throw new Error(`PROPFIND failed for ${dirPath} (HTTP ${response.status})`);
     return this.parsePropfindMultistatus(response.text);
@@ -246,7 +246,7 @@ export class WebDAVSync {
     const timeout = Math.max(300000, chunkSizeBytes / 10000);
     const logName = displayName || path;
     console.log(`[uploadFile] PUT ${logName} (${dataSizeMb}MB, timeout=${timeout}ms)`);
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise(r => window.setTimeout(r, 5));
     let response: RequestResult;
     try {
       response = await this.makeRequest('PUT', this.getFullUrl(path), headers, this.uint8ArrayToBuffer(data), timeout);
@@ -302,7 +302,7 @@ export class WebDAVSync {
     for (let i = 0; i < totalChunks; i++) {
       if (onProgress) onProgress({ fileName: shortName, chunk: i + 1, totalChunks });
 
-      await new Promise(r => setTimeout(r, 5));
+      await new Promise(r => window.setTimeout(r, 5));
       const start = i * chunkSizeBytes;
       const end = Math.min(start + chunkSizeBytes, data.length);
       const chunk = data.slice(start, end);
@@ -387,7 +387,7 @@ export class WebDAVSync {
       }
     }
     // fallback: try common pattern
-    const match = u.pathname.match(/\/remote\.php\/dav\/files\/([^\/]+)/);
+    const match = u.pathname.match(/\/remote\.php\/dav\/files\/([^/]+)/);
     if (match) {
       const base = u.pathname.substring(0, u.pathname.indexOf('/remote.php'));
       return `${u.protocol}//${u.host}${base}/remote.php/dav/uploads/${match[1]}/`;
@@ -415,7 +415,7 @@ export class WebDAVSync {
         contentLength = parseInt(headRes.headers['content-length'] || '0', 10);
         etag = headRes.headers['etag'] || null;
       }
-    } catch {}
+    } catch { /* HEAD may fail for non-existent or large files */ }
 
     if (contentLength <= WebDAVSync.PARALLEL_DOWNLOAD_THRESHOLD) {
       const res = await this.makeRequest('GET', url, auth);

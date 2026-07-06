@@ -1,7 +1,7 @@
 {
   "id": "obsync-webdav-gpg",
   "name": "WebDAV GPG Sync",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "minAppVersion": "1.5.0",
   "description": "Encrypt vault data with GPG and sync/restore to/from WebDAV. Encrypts both file content and filenames.",
   "author": "obsync",

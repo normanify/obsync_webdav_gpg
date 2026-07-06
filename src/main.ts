@@ -142,7 +142,7 @@ export default class ObsyncPlugin extends Plugin {
     });
 
     this.addRibbonIcon('upload-cloud', 'Sync encrypted vault to WebDAV', () => {
-      this.syncToWebDAV();
+      void this.syncToWebDAV();
     });
 
     this.statusBar = this.addStatusBarItem();
@@ -151,10 +151,10 @@ export default class ObsyncPlugin extends Plugin {
 
   onunload(): void {
     if (this.autoSyncTimer !== null) {
-      clearTimeout(this.autoSyncTimer);
+      window.clearTimeout(this.autoSyncTimer);
       this.autoSyncTimer = null;
     }
-    this.journal?.save();
+    void this.journal?.save();
   }
 
   private scheduleAutoSync(file: TFile): void {
@@ -164,29 +164,28 @@ export default class ObsyncPlugin extends Plugin {
     if (!this.settings.webdavUrl) return;
     if (!this.cryptoManager.isReady()) return;
 
-    if (this.autoSyncTimer !== null) clearTimeout(this.autoSyncTimer);
+    if (this.autoSyncTimer !== null) window.clearTimeout(this.autoSyncTimer);
     this.autoSyncTimer = window.setTimeout(() => {
       this.autoSyncTimer = null;
-      this.syncToWebDAV();
+      void this.syncToWebDAV();
     }, 3000);
   }
 
   private yieldToUI(): Promise<void> {
-    return new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 5)));
+    return new Promise(resolve => window.requestAnimationFrame(() => window.setTimeout(resolve, 5)));
   }
 
   private setStatus(text: string): void {
     if (this.statusBar) this.statusBar.setText(text);
   }
 
-  private log(...args: any[]): void {
+  private log(...args: unknown[]): void {
     if (this.settings.verboseLog) console.log(...args);
   }
 
   private makeUploadProgressCb(fileName: string) {
-    const plugin = this;
-    return function(p: { fileName: string; chunk: number; totalChunks: number }) {
-      plugin.setStatus(`Uploading ${p.fileName} (${p.chunk}/${p.totalChunks} · file ${plugin.pushCurrent}/${plugin.pushTotal})`);
+    return (p: { fileName: string; chunk: number; totalChunks: number }) => {
+      this.setStatus(`Uploading ${p.fileName} (${p.chunk}/${p.totalChunks} · file ${this.pushCurrent}/${this.pushTotal})`);
     };
   }
 
@@ -205,9 +204,9 @@ export default class ObsyncPlugin extends Plugin {
     if (idDir !== altDir) {
       try {
         const raw = await this.app.vault.adapter.read(`${altDir}/manifest.json`);
-        const m = JSON.parse(raw);
+        const m = JSON.parse(raw) as { id: string };
         if (m.id === this.manifest.id) { this.pluginDir = altDir; return; }
-      } catch {}
+      } catch { /* alt dir doesn't exist */ }
     }
     this.pluginDir = idDir;
   }
@@ -227,7 +226,7 @@ export default class ObsyncPlugin extends Plugin {
   private async loadShaCache(): Promise<void> {
     try {
       const raw = await this.app.vault.adapter.read(this.shaCachePath);
-      const obj = JSON.parse(raw);
+      const obj = JSON.parse(raw) as Record<string, { sha256: string; mtime: number; size: number }>;
       this.shaCache = new Map(Object.entries(obj));
     } catch {
       this.shaCache = new Map();
@@ -272,7 +271,7 @@ export default class ObsyncPlugin extends Plugin {
   private async loadManifest(): Promise<void> {
     try {
       const content = await this.app.vault.adapter.read(this.syncManifestPath);
-      this.syncManifest = JSON.parse(content);
+      this.syncManifest = JSON.parse(content) as SyncManifest;
       if (!this.syncManifest.files) this.syncManifest.files = {};
       if (!this.syncManifest.dirs) this.syncManifest.dirs = {};
       if (!this.syncManifest.segmentCache) this.syncManifest.segmentCache = {};
@@ -415,7 +414,12 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   private getExcludedPrefixes(): string[] {
-    return this.settings.excludePaths.split(',').map(s => s.trim()).filter(s => s.length > 0);
+    const configDir = this.app.vault.configDir;
+    return this.settings.excludePaths
+      .replace(/\.obsidian/g, configDir)
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
   }
 
   private isExcluded(path: string): boolean {
@@ -459,7 +463,7 @@ export default class ObsyncPlugin extends Plugin {
         this.shaCache.set(vaultPath, { sha256, mtime: stat.mtime, size: stat.size });
         this.shaCacheDirty = true;
       }
-    } catch {}
+    } catch { /* stat failed, skip sha cache */ }
   }
 
   private async ensureLocalFilenames(): Promise<void> {
@@ -514,7 +518,7 @@ export default class ObsyncPlugin extends Plugin {
       const { data: enc } = await this.syncClient.downloadFile(REMOTE_MANIFEST_PATH);
       const dec = await this.cryptoManager.decryptBytes(enc);
       const json = new TextDecoder().decode(dec);
-      const m = JSON.parse(json);
+      const m = JSON.parse(json) as SyncManifest;
       if (!m.segmentCache) m.segmentCache = {};
       return m;
     } catch (e) {
@@ -848,7 +852,7 @@ export default class ObsyncPlugin extends Plugin {
             await this.cacheShaForFile(vaultPath, currentSha);
             if (currentSha === syncEntry.localSha256) {
               try {
-                await this.app.vault.delete(localFile);
+                await this.app.fileManager.trashFile(localFile);
                 localDel++;
               } catch (e) {
                 console.error(`Failed to delete local ${vaultPath}:`, e);
@@ -864,7 +868,7 @@ export default class ObsyncPlugin extends Plugin {
         if (!remoteDirs.has(syncEntry.remotePath)) {
           const localDir = this.app.vault.getAbstractFileByPath(vaultDir);
           if (localDir instanceof TFolder) {
-            try { await this.app.vault.delete(localDir); localDel++; }
+            try { await this.app.fileManager.trashFile(localDir); localDel++; }
             catch (e) { console.error(`Failed to delete local dir ${vaultDir}:`, e); }
           }
           delete this.syncManifest.dirs[vaultDir];
@@ -985,7 +989,7 @@ export default class ObsyncPlugin extends Plugin {
       this.isSyncing = false;
       this.pushTotal = 0;
       this.pushCurrent = 0;
-      setTimeout(() => { if (!this.isSyncing) this.setStatus(''); }, 8000);
+      window.setTimeout(() => { if (!this.isSyncing) this.setStatus(''); }, 8000);
     }
   }
 
@@ -1074,18 +1078,18 @@ export default class ObsyncPlugin extends Plugin {
     const json = JSON.stringify(config, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = activeDocument.createElement('a');
     a.href = url;
     a.download = `obsync-config-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
+    activeDocument.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
+    activeDocument.body.removeChild(a);
     URL.revokeObjectURL(url);
     new Notice('Config exported');
   }
 
   importConfig(): void {
-    const input = document.createElement('input');
+    const input = activeDocument.createElement('input');
     input.type = 'file';
     input.accept = '.json';
     input.onchange = async () => {
@@ -1093,7 +1097,7 @@ export default class ObsyncPlugin extends Plugin {
       if (!file) return;
       try {
         const text = await file.text();
-        const data = JSON.parse(text);
+        const data = JSON.parse(text) as Record<string, unknown>;
         if (!data.settings || typeof data.settings !== 'object') {
           new Notice('Invalid config file: missing settings object');
           return;
