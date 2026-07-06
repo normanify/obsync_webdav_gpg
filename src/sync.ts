@@ -81,9 +81,36 @@ export class WebDAVSync {
     return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
   }
 
-  private async makeRequest(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, _timeoutMs = 30000): Promise<RequestResult> {
-    return this.makeRequestViaObsidian(method, fullUrl, headers, body);
+  private async makeRequest(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
+    if (!this.allowSelfSigned)
+      return this.makeRequestViaObsidian(method, fullUrl, headers, body);
+
+    let nodeRetries = 0;
+    while (nodeRetries < 3) {
+      try {
+        const res = await this.makeRequestViaNode(method, fullUrl, headers, body, timeoutMs);
+        if (res.status >= 500) {
+          nodeRetries++;
+          if (nodeRetries < 3) {
+            await WebDAVSync.sleep(1000 * nodeRetries);
+            continue;
+          }
+          console.warn(`[makeRequest] Node.js returned HTTP ${res.status} after ${nodeRetries} retries for ${method} ${fullUrl}, falling back to Obsidian`);
+          return this.makeRequestViaObsidian(method, fullUrl, headers, body);
+        }
+        return res;
+      } catch (e) {
+        const msg = String(e);
+        if (msg.includes('certificate') || msg.includes('CERT') || msg.includes('UNABLE_TO_VERIFY')) {
+          setEnvTlsReject(true);
+          return this.makeRequestViaObsidian(method, fullUrl, headers, body);
+        }
+        throw e;
+      }
+    }
+    throw new Error(`Node.js request failed after ${nodeRetries} retries`);
   }
+
   private async makeRequestViaObsidian(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer): Promise<RequestResult> {
     const response = await requestUrl({ url: fullUrl, method, headers, body, throw: false });
     const headersLower: Record<string, string> = {};
@@ -92,6 +119,57 @@ export class WebDAVSync {
     }
     return { status: response.status, headers: headersLower, arrayBuffer: response.arrayBuffer, text: response.text };
   }
+
+  /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, n/no-unsupported-features/node-builtins */
+  private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
+    const httpsMod = require('https');
+    const httpMod = require('http');
+
+    return new Promise((resolve, reject) => {
+      const urlObj = new URL(fullUrl);
+      const isHttps = urlObj.protocol === 'https:';
+      const port = urlObj.port || (isHttps ? 443 : 80);
+      const mod = isHttps ? httpsMod : httpMod;
+      const agent = isHttps ? new httpsMod.Agent({ rejectUnauthorized: false }) : undefined;
+
+      const options: Record<string, any> = {
+        hostname: urlObj.hostname,
+        port: parseInt(port.toString(), 10),
+        path: urlObj.pathname + urlObj.search,
+        method,
+        headers: { 'User-Agent': 'Obsidian WebDAV Sync Plugin/1.0', ...headers },
+      };
+      if (isHttps) { options.agent = agent; options.rejectUnauthorized = false; }
+
+      const req = mod.request(options, (res: any) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const data = Buffer.concat(chunks);
+          let text = '';
+          try { text = data.toString('utf-8'); } catch { /* binary data */ }
+          resolve({ status: res.statusCode || 500, headers: res.headers || {}, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
+        });
+      });
+      req.on('error', (err: any) => {
+        if (err.code === 'EPIPE' || err.message?.includes('socket hang up')) {
+          const bodySize = body ? ` (body size: ${body.byteLength} bytes)` : '';
+          reject(new Error(`Connection closed by server during request${bodySize} — EPIPE/socket hang up. The server may have a request size limit or does not support the requested operation.`));
+        } else {
+          reject(new Error(String(err)));
+        }
+      });
+      req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
+      if (body) {
+        if (!headers['Content-Length']) {
+          headers['Content-Length'] = String(body.byteLength);
+        }
+        req.write(Buffer.from(body));
+      }
+      req.end();
+    });
+  }
+  /* eslint-enable */
 
   async testConnection(): Promise<void> {
     const response = await this.makeRequest('PROPFIND', this.url, { Depth: '0', Authorization: this.getAuthHeader() });
@@ -390,9 +468,20 @@ export class WebDAVSync {
       results = await Promise.all(ranges.map((r, i) => fetchOne(r, i)));
     } catch (e) {
       console.warn(`[downloadFile] Chunk download failed after ${MAX_RETRIES} retries: ${e.message}, falling back to single GET`);
-      const fallback = await this.makeRequest('GET', url, auth, undefined, CHUNK_TIMEOUT * 2);
-      if (fallback.status >= 400) throw new Error(`Download failed for ${path} (HTTP ${fallback.status})`);
-      return { data: new Uint8Array(fallback.arrayBuffer), etag: etag || fallback.headers['etag'] || null };
+      let lastErr: any;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const fallback = await this.makeRequest('GET', url, auth, undefined, CHUNK_TIMEOUT * 2);
+          if (fallback.status < 400) {
+            return { data: new Uint8Array(fallback.arrayBuffer), etag: etag || fallback.headers['etag'] || null };
+          }
+          lastErr = new Error(`HTTP ${fallback.status}`);
+        } catch (e2) {
+          lastErr = e2;
+        }
+        if (attempt < 3) await WebDAVSync.sleep(2000 * attempt);
+      }
+      throw lastErr || new Error(`Download failed for ${path}`);
     }
 
     const totalSize = results.reduce((s, r) => s + r.arrayBuffer.byteLength, 0);
@@ -476,4 +565,17 @@ export class WebDAVSync {
     return href || null;
   }
 }
+
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+let envTlsRejectSet = false;
+function setEnvTlsReject(state: boolean): void {
+  if (state && !envTlsRejectSet) {
+    (process.env as Record<string, string>)['NODE_TLS_REJECT_UNAUTHORIZED'] = '0';
+    envTlsRejectSet = true;
+  } else if (!state && envTlsRejectSet) {
+    delete (process.env as Record<string, string>)['NODE_TLS_REJECT_UNAUTHORIZED'];
+    envTlsRejectSet = false;
+  }
+}
+/* eslint-enable */
 

@@ -50,6 +50,12 @@ function uint8ArrayToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
+function sanitizeVaultPath(vaultPath: string): string {
+  return vaultPath.split('/').map(seg => {
+    return seg.replace(/[:\\*?"<>|]/g, '_');
+  }).join('/');
+}
+
 export default class ObsyncPlugin extends Plugin {
   settings: ObsyncSettings;
   cryptoManager: CryptoManager;
@@ -68,6 +74,9 @@ export default class ObsyncPlugin extends Plugin {
   private statusBar: HTMLElement;
   private pushCurrent = 0;
   private pushTotal = 0;
+  private _hydrationInProgress = new Map<string, Promise<void>>();
+  private _origVaultReadBinary: ((file: TFile) => Promise<ArrayBuffer>) | null = null;
+  private _origShellOpenPath: ((path: string) => Promise<string>) | null = null;
 
   async onload(): Promise<void> {
     await this.detectPluginDir();
@@ -122,10 +131,73 @@ export default class ObsyncPlugin extends Plugin {
 
     this.registerEvent(this.app.workspace.on('file-open', (file) => {
       if (!this.settings.onDemand || !file) return;
-      if (file.stat.size === 0 && this.syncManifest.files[file.path]) {
-        void this.hydrateFile(file.path);
-      }
+      if (file.stat.size !== 0) return;
+      if (!this.syncManifest.files[file.path]) return;
+      new Notice(`Downloading ${file.name}...`);
+      this.ensureOnDemandHydrated(file.path).then(() => {
+        const leaf = this.app.workspace.getLeaf(false);
+        if (!leaf || leaf.view?.file?.path !== file.path) return;
+        const ext = file.extension?.toLowerCase() || '';
+        // Files that Obsidian can render natively
+        if (['md', 'canvas', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'mp3', 'ogg', 'wav', 'm4a', 'flac', 'mp4', 'webm', 'ogv', 'pdf', 'epub'].includes(ext)) {
+          leaf.setViewState({
+            type: leaf.view.getViewType(),
+            state: leaf.view.getState()
+          }).catch(e => console.error('[on-demand] setViewState failed:', e));
+        } else {
+          // Open with default system app
+          leaf.detach();
+          try {
+            const { shell } = require('electron');
+            const filePath = this.app.vault.adapter.getFullPath(file.path);
+            shell.openPath(filePath);
+          } catch (e) {
+            console.error('[on-demand] openWithDefaultApp failed:', e);
+            new Notice('Failed to open file externally');
+          }
+        }
+      }).catch(e => {
+        console.error('[on-demand] failed:', e);
+        new Notice(`Download failed: ${e.message}`);
+      });
     }));
+
+    // Right-click menu → "Download" for synced files
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+      if (!this.settings.onDemand) return;
+      if (!(file instanceof TFile)) return;
+      if (!this.syncManifest.files[file.path]) return;
+      menu.addItem((item) => {
+        item.setTitle('Download on-demand')
+          .setIcon('download')
+          .onClick(async () => {
+            new Notice(`Downloading ${file.name}...`);
+            try {
+              await this.ensureOnDemandHydrated(file.path);
+              const ext = file.extension?.toLowerCase() || '';
+              if (['md', 'canvas', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'mp3', 'ogg', 'wav', 'm4a', 'flac', 'mp4', 'webm', 'ogv', 'pdf', 'epub'].includes(ext)) {
+                const leaf = this.app.workspace.getLeaf(false);
+                if (leaf) await leaf.openFile(file);
+              } else {
+                try {
+                  const { shell } = require('electron');
+                  shell.openPath(this.app.vault.adapter.getFullPath(file.path));
+                } catch { /* ignore */ }
+              }
+              new Notice(`Downloaded: ${file.name}`);
+            } catch (e) {
+              new Notice(`Download failed: ${e.message}`);
+            }
+          });
+      });
+    }));
+
+    // Override Vault.readBinary to hydrate on-demand files before plugins read them
+    this._origVaultReadBinary = this.app.vault.readBinary.bind(this.app.vault);
+    this.app.vault.readBinary = this._interceptVaultReadBinary.bind(this);
+
+    // Override Electron shell.openPath to hydrate before opening with default system app
+    this._patchShellOpenPath();
 
     this.settingsTab = new ObsyncSettingTab(this.app, this);
     this.addSettingTab(this.settingsTab);
@@ -170,6 +242,17 @@ export default class ObsyncPlugin extends Plugin {
     if (this.autoSyncTimer !== null) {
       window.clearTimeout(this.autoSyncTimer);
       this.autoSyncTimer = null;
+    }
+    if (this._origVaultReadBinary) {
+      this.app.vault.readBinary = this._origVaultReadBinary;
+      this._origVaultReadBinary = null;
+    }
+    if (this._origShellOpenPath) {
+      try {
+        const electron = require('electron');
+        if (electron?.shell) electron.shell.openPath = this._origShellOpenPath;
+      } catch { /* ignore */ }
+      this._origShellOpenPath = null;
     }
     void this.journal?.save();
   }
@@ -460,6 +543,7 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   private async writeFileToVault(vaultPath: string, data: Uint8Array): Promise<void> {
+    vaultPath = sanitizeVaultPath(vaultPath);
     const folder = vaultPath.contains('/') ? vaultPath.substring(0, vaultPath.lastIndexOf('/')) : '';
     if (folder) {
       const exists = await this.app.vault.adapter.exists(folder);
@@ -483,12 +567,59 @@ export default class ObsyncPlugin extends Plugin {
     } catch { /* stat failed, skip sha cache */ }
   }
 
+  private async ensureOnDemandHydrated(path: string): Promise<void> {
+    const existing = this._hydrationInProgress.get(path);
+    if (existing) { await existing; return; }
+    const promise = this.hydrateFile(path);
+    this._hydrationInProgress.set(path, promise);
+    try {
+      await promise;
+    } finally {
+      this._hydrationInProgress.delete(path);
+    }
+  }
+
+  private _patchShellOpenPath(): void {
+    try {
+      const electron = require('electron');
+      if (!electron?.shell?.openPath) return;
+      this._origShellOpenPath = electron.shell.openPath.bind(electron.shell);
+      const self = this;
+      electron.shell.openPath = async function (filePath: string): Promise<string> {
+        if (self.settings.onDemand) {
+          const vaultBase = self.app.vault.adapter.getFullPath('/');
+          const relPath = filePath.startsWith(vaultBase)
+            ? filePath.slice(vaultBase.length).replace(/^\//, '')
+            : null;
+          if (relPath) {
+            const file = self.app.vault.getFileByPath(relPath);
+            if (file && file.stat.size === 0 && self.syncManifest.files[file.path]) {
+              await self.ensureOnDemandHydrated(file.path);
+            }
+          }
+        }
+        return (self._origShellOpenPath as (path: string) => Promise<string>)(filePath);
+      };
+    } catch { /* shell.openPath not available */ }
+  }
+
+  private async _interceptVaultReadBinary(file: TFile): Promise<ArrayBuffer> {
+    if (this.settings.onDemand && !this.isSyncing && file.stat.size === 0) {
+      const entry = this.syncManifest.files[file.path];
+      if (entry) {
+        try {
+          await this.ensureOnDemandHydrated(file.path);
+        } catch (e) {
+          console.error('[on-demand] hydrate failed during readBinary, falling back to original:', e);
+        }
+      }
+    }
+    return (this._origVaultReadBinary as (file: TFile) => Promise<ArrayBuffer>)(file);
+  }
+
   async hydrateFile(vaultPath: string): Promise<void> {
     const syncEntry = this.syncManifest.files[vaultPath];
-    if (!syncEntry) {
-      new Notice('File not found in sync manifest');
-      return;
-    }
+    if (!syncEntry) { new Notice('File not found in sync manifest'); return; }
     try {
       this.setStatus(`Downloading ${vaultPath.split('/').pop()}...`);
       const { data: encData, etag } = await this.syncClient.downloadFile(syncEntry.remotePath);
@@ -501,13 +632,8 @@ export default class ObsyncPlugin extends Plugin {
       syncEntry.localMtime = mtime;
       if (etag) syncEntry.etag = etag;
       await this.saveManifest();
-      const leaf = this.app.workspace.getLeaf(false);
-      if (leaf) {
-        const file = this.app.vault.getAbstractFileByPath(vaultPath);
-        if (file instanceof TFile) await leaf.openFile(file);
-      }
-      new Notice(`Downloaded: ${vaultPath.split('/').pop()}`);
     } catch (e) {
+      console.error('[on-demand] hydrateFile error:', e);
       new Notice(`Failed to download ${vaultPath}: ${e.message}`);
     }
   }
@@ -815,9 +941,10 @@ export default class ObsyncPlugin extends Plugin {
         this.log(`[pull] downloading ${vaultPath} — wasNewPath=${wasNewPath} hasEntry=${!!syncEntry}${syncEntry ? ` etagMatch=${syncEntry.etag === remoteEtag} (local=${syncEntry.etag}, remote=${remoteEtag})` : ''}`);
 
         if (this.settings.onDemand) {
+          const safePath = sanitizeVaultPath(vaultPath);
           await this.writeFileToVault(vaultPath, new Uint8Array(0));
-          this.syncManifest.files[vaultPath] = { remotePath, etag: remoteEtag, localMtime: Date.now(), localSha256: '' };
-          this.log(`[pull] on-demand placeholder ${vaultPath}`);
+          this.syncManifest.files[safePath] = { remotePath, etag: remoteEtag, localMtime: Date.now(), localSha256: '' };
+          this.log(`[pull] on-demand placeholder ${safePath}`);
           onDemandPlaceholders++;
           continue;
         }
@@ -1097,8 +1224,9 @@ export default class ObsyncPlugin extends Plugin {
 
         try {
           if (this.settings.onDemand) {
+            const safePath = sanitizeVaultPath(vaultPath);
             await this.writeFileToVault(vaultPath, new Uint8Array(0));
-            this.syncManifest.files[vaultPath] = { remotePath: entry.href, etag: entry.etag || '', localMtime: Date.now(), localSha256: '' };
+            this.syncManifest.files[safePath] = { remotePath: entry.href, etag: entry.etag || '', localMtime: Date.now(), localSha256: '' };
             restored++;
             continue;
           }
