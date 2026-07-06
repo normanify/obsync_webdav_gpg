@@ -71,6 +71,7 @@ export default class ObsyncPlugin extends Plugin {
       this.settings.webdavUsername,
       this.settings.webdavPassword,
       this.settings.allowSelfSignedCerts,
+      this.settings.chunkSizeMb,
     );
 
     await this.loadKeys();
@@ -376,6 +377,7 @@ export default class ObsyncPlugin extends Plugin {
         this.settings.webdavUsername,
         this.settings.webdavPassword,
         this.settings.allowSelfSignedCerts,
+        this.settings.chunkSizeMb,
       );
 
       await this.syncClient.testConnection();
@@ -719,6 +721,7 @@ export default class ObsyncPlugin extends Plugin {
         this.settings.webdavUsername,
         this.settings.webdavPassword,
         this.settings.allowSelfSignedCerts,
+        this.settings.chunkSizeMb,
       );
 
       new Notice('Restoring...');
@@ -823,7 +826,7 @@ export default class ObsyncPlugin extends Plugin {
       this.journal.record('file_updated', file.path);
       this.scheduleAutoSync(file);
     }));
-        this.syncClient.updateConfig(this.settings.webdavUrl, this.settings.webdavUsername, this.settings.webdavPassword, this.settings.allowSelfSignedCerts);
+        this.syncClient.updateConfig(this.settings.webdavUrl, this.settings.webdavUsername, this.settings.webdavPassword, this.settings.allowSelfSignedCerts, this.settings.chunkSizeMb);
         new Notice('Config imported successfully');
         this.settingsTab?.display();
       } catch (e) {

@@ -12,6 +12,7 @@ export interface ObsyncSettings {
   excludePaths: string;
   allowSelfSignedCerts: boolean;
   autoSyncOnSave: boolean;
+  chunkSizeMb: number;
 }
 
 export const DEFAULT_SETTINGS: ObsyncSettings = {
@@ -25,6 +26,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   excludePaths: '.obsidian/plugins/,.trash/',
   allowSelfSignedCerts: false,
   autoSyncOnSave: false,
+  chunkSizeMb: 90,
 };
 
 export class ObsyncSettingTab extends PluginSettingTab {
@@ -227,6 +229,19 @@ export class ObsyncSettingTab extends PluginSettingTab {
         }));
 
     containerEl.createEl('h3', { text: 'Advanced' });
+
+    new Setting(containerEl)
+      .setName('Chunk Size (MB)')
+      .setDesc('Files larger than this will be split into chunks for upload. Required for Nextcloud to handle files >100MB. Default: 90MB.')
+      .addText(text => text
+        .setValue(String(this.plugin.settings.chunkSizeMb))
+        .onChange(async value => {
+          const num = parseInt(value, 10);
+          if (!isNaN(num) && num > 0) {
+            this.plugin.settings.chunkSizeMb = num;
+            await this.plugin.saveSettings();
+          }
+        }));
 
     new Setting(containerEl)
       .setName('Excluded Paths')

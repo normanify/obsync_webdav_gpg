@@ -23,6 +23,7 @@ export class WebDAVSync {
   private username: string;
   private password: string;
   private allowSelfSigned: boolean;
+  private chunkSizeMb: number = 90;
 
   private static readonly PROPFIND_BODY = `<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:">
@@ -32,18 +33,20 @@ export class WebDAVSync {
   </d:prop>
 </d:propfind>`;
 
-  constructor(url: string, username: string, password: string, allowSelfSigned = false) {
+  constructor(url: string, username: string, password: string, allowSelfSigned = false, chunkSizeMb = 90) {
     this.url = url.replace(/\/?$/, '/');
     this.username = username;
     this.password = password;
     this.allowSelfSigned = allowSelfSigned;
+    this.chunkSizeMb = chunkSizeMb;
   }
 
-  updateConfig(url: string, username: string, password: string, allowSelfSigned?: boolean): void {
+  updateConfig(url: string, username: string, password: string, allowSelfSigned?: boolean, chunkSizeMb?: number): void {
     this.url = url.replace(/\/?$/, '/');
     this.username = username;
     this.password = password;
     if (allowSelfSigned !== undefined) this.allowSelfSigned = allowSelfSigned;
+    if (chunkSizeMb !== undefined) this.chunkSizeMb = chunkSizeMb;
   }
 
   private getAuthHeader(): string {
@@ -60,12 +63,12 @@ export class WebDAVSync {
     return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
   }
 
-  private async makeRequest(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer): Promise<RequestResult> {
+  private async makeRequest(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
     if (!this.allowSelfSigned)
       return this.makeRequestViaObsidian(method, fullUrl, headers, body);
 
     try {
-      return await this.makeRequestViaNode(method, fullUrl, headers, body);
+      return await this.makeRequestViaNode(method, fullUrl, headers, body, timeoutMs);
     } catch (e) {
       const msg = String(e);
       if (msg.includes('certificate') || msg.includes('CERT') || msg.includes('UNABLE_TO_VERIFY')) {
@@ -85,7 +88,7 @@ export class WebDAVSync {
     return { status: response.status, headers: headersLower, arrayBuffer: response.arrayBuffer, text: response.text };
   }
 
-  private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer): Promise<RequestResult> {
+  private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
     let https: any, http: any;
     try {
       https = require('https');
@@ -119,7 +122,7 @@ export class WebDAVSync {
         });
       });
       req.on('error', reject);
-      req.setTimeout(30000, () => { req.destroy(new Error('Request timeout')); });
+      req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
       if (body) req.write(Buffer.from(body));
       req.end();
     });
@@ -187,6 +190,12 @@ export class WebDAVSync {
   }
 
   async uploadFile(path: string, data: Uint8Array, ifMatch?: string): Promise<string | null> {
+    const chunkSizeBytes = this.chunkSizeMb * 1024 * 1024;
+
+    if (data.length > chunkSizeBytes) {
+      return await this.chunkedUpload(path, data, ifMatch);
+    }
+
     const headers: Record<string, string> = {
       Authorization: this.getAuthHeader(),
       'Content-Type': 'application/octet-stream',
@@ -196,6 +205,101 @@ export class WebDAVSync {
     if (ifMatch !== undefined && response.status === 412) return null;
     if (response.status >= 400) throw new Error(`Upload failed for ${path} (HTTP ${response.status})`);
     return response.headers['etag'] || null;
+  }
+
+  private async chunkedUpload(remotePath: string, data: Uint8Array, ifMatch?: string): Promise<string | null> {
+    const chunkSizeBytes = this.chunkSizeMb * 1024 * 1024;
+    const uploadId = this.generateUploadId();
+    const uploadBaseUrl = this.getUploadsBaseUrl();
+    const auth = this.getAuthHeader();
+
+    const uploadDirUrl = `${uploadBaseUrl}${uploadId}/`;
+    const targetUrl = this.getFullUrl(remotePath);
+    const timeout = Math.max(300000, chunkSizeBytes / 10000); // 5min min, scales with chunk size
+
+    const totalChunks = Math.ceil(data.length / chunkSizeBytes);
+
+    try {
+      await this.makeRequest('MKCOL', uploadDirUrl, { Authorization: auth });
+    } catch (e) {
+      // collection may already exist from a previous attempt
+    }
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * chunkSizeBytes;
+      const end = Math.min(start + chunkSizeBytes, data.length);
+      const chunk = data.slice(start, end);
+      const chunkName = String(i + 1).padStart(10, '0');
+      const chunkUrl = `${uploadDirUrl}${chunkName}`;
+
+      await this.makeRequest('PUT', chunkUrl, {
+        Authorization: auth,
+        'Content-Type': 'application/octet-stream',
+        'OC-Chunked': '1',
+      }, this.uint8ArrayToBuffer(chunk), timeout);
+    }
+
+    const destHeader = this.getOriginUrl() + '/' + remotePath.startsWith('/') ? remotePath : '/' + remotePath;
+    const assembleUrl = `${uploadDirUrl}.file`;
+
+    const moveRes = await this.makeRequest('MOVE', assembleUrl, {
+      Authorization: auth,
+      Destination: targetUrl,
+      'OC-Assemble': '1',
+    });
+
+    if (moveRes.status >= 400) {
+      throw new Error(`Chunked upload assembly failed for ${remotePath} (HTTP ${moveRes.status})`);
+    }
+
+    // Fetch etag of assembled file
+    try {
+      const propRes = await this.makeRequest('PROPFIND', targetUrl, {
+        Depth: '0',
+        Authorization: auth,
+      });
+      if (propRes.status < 400) {
+        const entries = this.parsePropfindMultistatus(propRes.text);
+        if (entries.length > 0 && entries[0].etag) {
+          return entries[0].etag;
+        }
+      }
+    } catch (e) {
+      // non-critical
+    }
+
+    return null;
+  }
+
+  private getOriginUrl(): string {
+    const u = new URL(this.url);
+    return `${u.protocol}//${u.host}`;
+  }
+
+  private getUploadsBaseUrl(): string {
+    const u = new URL(this.url);
+    for (const part of ['files', 'dav/files']) {
+      const idx = u.pathname.indexOf(`/${part}/`);
+      if (idx >= 0) {
+        const afterPart = u.pathname.substring(idx + part.length + 2);
+        const userId = afterPart.split('/')[0];
+        const base = u.pathname.substring(0, idx);
+        return `${u.protocol}//${u.host}${base}/uploads/${userId}/`;
+      }
+    }
+    // fallback: try common pattern
+    const match = u.pathname.match(/\/remote\.php\/dav\/files\/([^\/]+)/);
+    if (match) {
+      const base = u.pathname.substring(0, u.pathname.indexOf('/remote.php'));
+      return `${u.protocol}//${u.host}${base}/remote.php/dav/uploads/${match[1]}/`;
+    }
+    throw new Error('Cannot detect Nextcloud uploads endpoint from URL. Make sure your WebDAV URL follows the pattern: https://example.com/remote.php/dav/files/{username}/...');
+  }
+
+  private generateUploadId(): string {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
   async downloadFile(path: string): Promise<DownloadResult> {
