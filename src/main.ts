@@ -81,6 +81,7 @@ export default class ObsyncPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.detectPluginDir();
     await this.loadSettings();
+    await this.loadManifest();
 
     this.cryptoManager = new CryptoManager();
     this.syncClient = new WebDAVSync(
