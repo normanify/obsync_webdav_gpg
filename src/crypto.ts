@@ -1,5 +1,26 @@
 import * as openpgp from 'openpgp';
 
+const HYBRID_MAGIC = new Uint8Array([79, 66, 83, 89, 78, 67, 45, 72]); // "OBSYNC-H"
+const MAGIC_LEN = 8;
+const KEY_LEN_BYTES = 4;
+const IV_LEN = 12;
+
+function u32ToBytes(v: number): Uint8Array {
+  return new Uint8Array([v >>> 24, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff]);
+}
+
+function bytesToU32(buf: Uint8Array, offset: number): number {
+  return (buf[offset] << 24) | (buf[offset + 1] << 16) | (buf[offset + 2] << 8) | buf[offset + 3];
+}
+
+function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+const HYBRID_MAGIC_BYTES = new Uint8Array([79, 66, 83, 89, 78, 67, 45, 72]); // "OBSYNC-H"
+
 export class CryptoManager {
   private publicKey: openpgp.PublicKey | null = null;
   private privateKey: openpgp.PrivateKey | null = null;
@@ -47,17 +68,64 @@ export class CryptoManager {
 
   async encryptBytes(data: Uint8Array): Promise<Uint8Array> {
     if (!this.publicKey) throw new Error('Public key not loaded');
-    const message = await openpgp.createMessage({ binary: data });
-    const encrypted = await openpgp.encrypt({
-      message,
+
+    // Generate random AES-256 key
+    const aesKeyRaw = crypto.getRandomValues(new Uint8Array(32));
+    const aesKey = await crypto.subtle.importKey('raw', aesKeyRaw, 'AES-GCM', false, ['encrypt']);
+
+    // Encrypt bulk data with AES-GCM via Web Crypto (non-blocking)
+    const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, data));
+
+    // Encrypt the AES key with OpenPGP (small data, fast)
+    const keyMsg = await openpgp.createMessage({ binary: aesKeyRaw });
+    const encryptedKey = new Uint8Array(await openpgp.encrypt({
+      message: keyMsg,
       encryptionKeys: this.publicKey,
       format: 'binary',
-    });
-    return encrypted as Uint8Array;
+    }));
+
+    // Build hybrid format: magic + keyLen + RSA-encrypted key + IV + AES ciphertext
+    const result = new Uint8Array(MAGIC_LEN + KEY_LEN_BYTES + encryptedKey.length + IV_LEN + ciphertext.length);
+    result.set(HYBRID_MAGIC, 0);
+    result.set(u32ToBytes(encryptedKey.length), MAGIC_LEN);
+    result.set(encryptedKey, MAGIC_LEN + KEY_LEN_BYTES);
+    result.set(iv, MAGIC_LEN + KEY_LEN_BYTES + encryptedKey.length);
+    result.set(ciphertext, MAGIC_LEN + KEY_LEN_BYTES + encryptedKey.length + IV_LEN);
+    return result;
+  }
+
+  isHybridFormat(data: Uint8Array): boolean {
+    return data.length >= MAGIC_LEN && arraysEqual(data.subarray(0, MAGIC_LEN), HYBRID_MAGIC);
   }
 
   async decryptBytes(data: Uint8Array): Promise<Uint8Array> {
     if (!this.privateKey) throw new Error('Private key not loaded');
+
+    if (this.isHybridFormat(data)) {
+      const keyLen = bytesToU32(data, MAGIC_LEN);
+      const keyStart = MAGIC_LEN + KEY_LEN_BYTES;
+      const ivStart = keyStart + keyLen;
+      const ctStart = ivStart + IV_LEN;
+
+      // Decrypt the AES key with OpenPGP (small data, fast)
+      const encKeyData = data.subarray(keyStart, ivStart);
+      const keyMsg = await openpgp.readMessage({ binaryMessage: encKeyData });
+      const { data: aesKeyRaw } = await openpgp.decrypt({
+        message: keyMsg,
+        decryptionKeys: this.privateKey,
+        format: 'binary',
+      });
+
+      // Decrypt bulk data with AES-GCM via Web Crypto (non-blocking)
+      const aesKey = await crypto.subtle.importKey('raw', aesKeyRaw as Uint8Array, 'AES-GCM', false, ['decrypt']);
+      const iv = data.subarray(ivStart, ctStart);
+      const ciphertext = data.subarray(ctStart);
+      const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext);
+      return new Uint8Array(decrypted);
+    }
+
+    // Legacy OpenPGP format
     const message = await openpgp.readMessage({ binaryMessage: data });
     const { data: decrypted } = await openpgp.decrypt({
       message,

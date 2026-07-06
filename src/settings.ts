@@ -13,6 +13,7 @@ export interface ObsyncSettings {
   allowSelfSignedCerts: boolean;
   autoSyncOnSave: boolean;
   chunkSizeMb: number;
+  verboseLog: boolean;
 }
 
 export const DEFAULT_SETTINGS: ObsyncSettings = {
@@ -27,6 +28,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   allowSelfSignedCerts: false,
   autoSyncOnSave: false,
   chunkSizeMb: 90,
+  verboseLog: false,
 };
 
 export class ObsyncSettingTab extends PluginSettingTab {
@@ -241,6 +243,16 @@ export class ObsyncSettingTab extends PluginSettingTab {
             this.plugin.settings.chunkSizeMb = num;
             await this.plugin.saveSettings();
           }
+        }));
+
+    new Setting(containerEl)
+      .setName('Verbose Log')
+      .setDesc('Show detailed file-by-file progress in the console (DevTools → Console) during sync')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.verboseLog)
+        .onChange(async value => {
+          this.plugin.settings.verboseLog = value;
+          await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)

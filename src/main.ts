@@ -28,7 +28,7 @@ const EMPTY_MANIFEST: SyncManifest = {
 };
 
 const MAX_ENCODED_SEGMENT_LENGTH = 200;
-const MAX_FILENAME_BYTES = 100;
+const MAX_FILENAME_CHARS = 100;
 const REMOTE_MANIFEST_PATH = '__manifest__.json.enc';
 
 function base64url(data: Uint8Array): string {
@@ -169,8 +169,16 @@ export default class ObsyncPlugin extends Plugin {
     }, 3000);
   }
 
+  private yieldToUI(): Promise<void> {
+    return new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 5)));
+  }
+
   private setStatus(text: string): void {
     if (this.statusBar) this.statusBar.setText(text);
+  }
+
+  private log(...args: any[]): void {
+    if (this.settings.verboseLog) console.log(...args);
   }
 
   private makeUploadProgressCb(fileName: string) {
@@ -245,7 +253,16 @@ export default class ObsyncPlugin extends Plugin {
 
   private async encryptPathSegment(plain: string): Promise<string> {
     const cached = this.plainToEnc.get(plain);
-    if (cached) return cached;
+    if (cached) {
+      if (cached.length <= MAX_ENCODED_SEGMENT_LENGTH) return cached;
+      const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cached));
+      const hex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+      const seg = hex.substring(0, 40);
+      this.encToPlain.delete(cached);
+      this.encToPlain.set(seg, plain);
+      this.plainToEnc.set(plain, seg);
+      return seg;
+    }
     const combined = await this.cryptoManager.encryptPathSegment(plain);
     let seg = base64url(combined);
     if (seg.length > MAX_ENCODED_SEGMENT_LENGTH) {
@@ -386,25 +403,30 @@ export default class ObsyncPlugin extends Plugin {
 
   private async ensureLocalFilenames(): Promise<void> {
     const allFiles = this.app.vault.getFiles();
+    const usedNames = new Set(allFiles.map(f => f.path));
     for (const file of allFiles) {
       if (this.isExcluded(file.path)) continue;
-      const nameBytes = new TextEncoder().encode(file.name).length;
-      if (nameBytes <= MAX_FILENAME_BYTES) continue;
+      if (file.name.length <= MAX_FILENAME_CHARS) continue;
       const extIdx = file.name.lastIndexOf('.');
       const ext = extIdx >= 0 ? file.name.substring(extIdx) : '';
       const base = extIdx >= 0 ? file.name.substring(0, extIdx) : file.name;
-      let truncated = '';
-      for (const ch of base) {
-        const next = truncated + ch;
-        if (new TextEncoder().encode(next + ext).length > MAX_FILENAME_BYTES) break;
-        truncated = next;
-      }
-      const newName = truncated + ext;
+      const maxBase = MAX_FILENAME_CHARS - ext.length;
+      let truncated = base.substring(0, Math.max(maxBase, 10));
+      let newName = truncated + ext;
       if (newName === file.name) continue;
-      const newPath = file.parent ? `${file.parent.path}/${newName}` : newName;
+      let suffix = 1;
+      let newPath = file.parent ? `${file.parent.path}/${newName}` : newName;
+      while (usedNames.has(newPath)) {
+        const tag = `_${suffix}`;
+        truncated = base.substring(0, Math.max(maxBase - tag.length, 10));
+        newName = truncated + tag + ext;
+        newPath = file.parent ? `${file.parent.path}/${newName}` : newName;
+        suffix++;
+      }
+      usedNames.add(newPath);
       try {
         await this.app.vault.rename(file, newPath);
-        console.log(`Renamed "${file.path}" → "${newPath}"`);
+        new Notice(`Renamed "${file.name}" → "${newName}"`);
       } catch (e) {
         console.error(`Failed to rename ${file.path}:`, e);
       }
@@ -503,7 +525,9 @@ export default class ObsyncPlugin extends Plugin {
       this.pushCurrent = 0;
 
       for (const entry of journalEntries) {
+        this.setStatus(`Processing journal: ${entry.vaultPath.split('/').pop()}`);
         if (entry.type === 'file_deleted') {
+          this.log(`[journal] file_deleted ${entry.vaultPath}`);
           const syncEntry = this.syncManifest.files[entry.vaultPath];
           if (syncEntry) {
             try {
@@ -525,8 +549,10 @@ export default class ObsyncPlugin extends Plugin {
             }
           }
           journalCompleted.add(entry.id);
+          await this.yieldToUI();
 
         } else if (entry.type === 'dir_deleted') {
+          this.log(`[journal] dir_deleted ${entry.vaultPath}`);
           try {
             const remotePath = await this.vaultDirToRemote(entry.vaultPath);
             await this.syncClient.deleteFile(remotePath);
@@ -543,12 +569,15 @@ export default class ObsyncPlugin extends Plugin {
             if (vd.startsWith(entry.vaultPath + '/')) delete this.syncManifest.dirs[vd];
           }
           journalCompleted.add(entry.id);
+          await this.yieldToUI();
 
         } else if (entry.type === 'file_updated') {
+          this.log(`[journal] file_updated ${entry.vaultPath}`);
           const localFile = this.app.vault.getAbstractFileByPath(entry.vaultPath);
           if (!(localFile instanceof TFile)) { journalCompleted.add(entry.id); continue; }
           try {
             const content = new Uint8Array(await this.app.vault.readBinary(localFile));
+            await this.yieldToUI();
             const contentSha = await this.computeContentSha256(content);
             const syncEntry = this.syncManifest.files[entry.vaultPath];
 
@@ -562,22 +591,27 @@ export default class ObsyncPlugin extends Plugin {
 
             const parentDir = remotePath.contains('/') ? remotePath.substring(0, remotePath.lastIndexOf('/')) : '';
             if (parentDir) await this.syncClient.ensureDirectory(parentDir);
+            await this.yieldToUI();
             const encrypted = await this.cryptoManager.encryptBytes(content);
+            await this.yieldToUI();
             const shortName = entry.vaultPath.split('/').pop() || entry.vaultPath;
             this.pushCurrent++;
-            let etag = await this.syncClient.uploadFile(remotePath, encrypted, syncEntry?.etag, this.makeUploadProgressCb(shortName));
+            let etag = await this.syncClient.uploadFile(remotePath, encrypted, syncEntry?.etag, this.makeUploadProgressCb(shortName), shortName);
 
             if (etag === null) {
               const { data: remoteEnc } = await this.syncClient.downloadFile(remotePath);
+              await this.yieldToUI();
               const remoteDec = await this.cryptoManager.decryptBytes(remoteEnc);
+              await this.yieldToUI();
               const remoteSha = await this.computeContentSha256(remoteDec);
               if (remoteSha !== contentSha) {
                 const cp = this.conflictFileName(entry.vaultPath);
                 await this.writeFileToVault(cp, remoteDec);
+                await this.yieldToUI();
                 new Notice(`Conflict: remote ${entry.vaultPath} saved as ${cp}`);
                 conflicts++;
               }
-              etag = await this.syncClient.uploadFile(remotePath, encrypted, undefined, this.makeUploadProgressCb(shortName));
+              etag = await this.syncClient.uploadFile(remotePath, encrypted, undefined, this.makeUploadProgressCb(shortName), shortName);
             }
 
             this.syncManifest.files[entry.vaultPath] = {
@@ -590,6 +624,7 @@ export default class ObsyncPlugin extends Plugin {
             continue;
           }
           journalCompleted.add(entry.id);
+          await this.yieldToUI();
         }
       }
 
@@ -617,6 +652,7 @@ export default class ObsyncPlugin extends Plugin {
 
       /* ── PULL (Remote → Local) ── */
       for (const [remotePath, remoteEtag] of remoteFiles) {
+        this.log(`[pull] ${remotePath}`);
         let vaultPath = remotePathToVault.get(remotePath);
         let wasNewPath = false;
 
@@ -625,6 +661,9 @@ export default class ObsyncPlugin extends Plugin {
           if (!vaultPath) continue;
           wasNewPath = true;
         }
+        const shortName = vaultPath.split('/').pop();
+        this.setStatus(`Pulling: ${shortName}`);
+        await this.yieldToUI();
 
         if (this.isExcluded(vaultPath)) continue;
 
@@ -632,8 +671,26 @@ export default class ObsyncPlugin extends Plugin {
         if (!wasNewPath && syncEntry && syncEntry.etag === remoteEtag) continue;
 
         try {
-          const { data: encData, etag: newEtag } = await this.syncClient.downloadFile(remotePath);
+          const { data: encData, etag: newEtagSrc } = await this.syncClient.downloadFile(
+            remotePath,
+            (p) => this.setStatus(`Pulling: ${shortName} (chunk ${p.chunk}/${p.totalChunks})`)
+          );
+          let newEtag = newEtagSrc;
+          await this.yieldToUI();
+          const wasLegacy = !this.cryptoManager.isHybridFormat(encData);
           const decrypted = await this.cryptoManager.decryptBytes(encData);
+          await this.yieldToUI();
+
+          // Re-upload legacy-format files with hybrid format
+          if (wasLegacy && !this.isExcluded(vaultPath)) {
+            try {
+              const reEncrypted = await this.cryptoManager.encryptBytes(decrypted);
+              const newEtagAfter = await this.syncClient.uploadFile(remotePath, reEncrypted);
+              if (newEtagAfter) newEtag = newEtagAfter;
+            } catch (e) {
+              console.warn(`Failed to re-upload legacy file ${remotePath}:`, e);
+            }
+          }
           const remoteSha = await this.computeContentSha256(decrypted);
           const localFile = this.app.vault.getAbstractFileByPath(vaultPath);
 
@@ -643,24 +700,28 @@ export default class ObsyncPlugin extends Plugin {
 
             if (currentSha === syncEntry.localSha256) {
               await this.writeFileToVault(vaultPath, decrypted);
+              await this.yieldToUI();
               const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
               this.syncManifest.files[vaultPath] = { remotePath, etag: newEtag || '', localMtime: mtime, localSha256: remoteSha };
               pulled++;
             } else {
               const conflictPath = this.conflictFileName(vaultPath);
               await this.writeFileToVault(conflictPath, decrypted);
+              await this.yieldToUI();
               new Notice(`Conflict: remote ${vaultPath} saved as ${conflictPath}`);
               conflicts++;
             }
           } else {
             const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
             await this.writeFileToVault(vaultPath, decrypted);
+            await this.yieldToUI();
             this.syncManifest.files[vaultPath] = { remotePath, etag: newEtag || '', localMtime: mtime, localSha256: remoteSha };
             pulled++;
           }
         } catch (e) {
           console.error(`Failed to pull ${remotePath}:`, e);
         }
+        await this.yieldToUI();
       }
 
       /* Remote deletion → local */
@@ -743,18 +804,24 @@ export default class ObsyncPlugin extends Plugin {
 
       for (const file of newFiles) {
         const vaultPath = file.path;
+        this.log(`[push] ${vaultPath}`);
+        this.setStatus(`Pushing: ${vaultPath.split('/').pop()}`);
         const content = new Uint8Array(await this.app.vault.readBinary(file));
+        await this.yieldToUI();
         const contentSha = await this.computeContentSha256(content);
         const remotePath = await this.vaultPathToRemote(vaultPath);
         const parentDir = remotePath.contains('/') ? remotePath.substring(0, remotePath.lastIndexOf('/')) : '';
         if (parentDir) await this.syncClient.ensureDirectory(parentDir);
+        await this.yieldToUI();
 
         const encrypted = await this.cryptoManager.encryptBytes(content);
+        await this.yieldToUI();
         this.pushCurrent++;
         const shortName = vaultPath.split('/').pop() || vaultPath;
-        const etag = await this.syncClient.uploadFile(remotePath, encrypted, undefined, this.makeUploadProgressCb(shortName));
+        const etag = await this.syncClient.uploadFile(remotePath, encrypted, undefined, this.makeUploadProgressCb(shortName), shortName);
         this.syncManifest.files[vaultPath] = { remotePath, etag: etag || '', localMtime: file.stat.mtime, localSha256: contentSha };
         pushed++;
+        await this.yieldToUI();
       }
 
       /* ── PUSH directories ── */
@@ -854,7 +921,11 @@ export default class ObsyncPlugin extends Plugin {
         if (!vaultPath || this.isExcluded(vaultPath)) { skipped++; continue; }
 
         try {
-          const { data: encData, etag } = await this.syncClient.downloadFile(entry.href);
+          const shortName = vaultPath.split('/').pop();
+          const { data: encData, etag } = await this.syncClient.downloadFile(
+            entry.href,
+            (p) => this.setStatus(`Syncing: ${shortName} (chunk ${p.chunk}/${p.totalChunks})`)
+          );
           const decrypted = await this.cryptoManager.decryptBytes(encData);
           const sha256 = await this.computeContentSha256(decrypted);
           await this.writeFileToVault(vaultPath, decrypted);

@@ -24,12 +24,24 @@ export interface UploadProgress {
   totalChunks: number;
 }
 
+export interface DownloadProgress {
+  chunk: number;
+  totalChunks: number;
+}
+
 export class WebDAVSync {
   private url: string;
   private username: string;
   private password: string;
   private allowSelfSigned: boolean;
   private chunkSizeMb: number = 90;
+
+  private static readonly CHUNK_DOWNLOAD_SIZE = 10 * 1024 * 1024; // 10 MB per parallel chunk
+  private static readonly PARALLEL_DOWNLOAD_THRESHOLD = 5 * 1024 * 1024; // 5 MB – below this, download whole file
+
+  private static sleep(ms = 5): Promise<void> {
+    return new Promise(r => setTimeout(r, ms));
+  }
 
   private static readonly PROPFIND_BODY = `<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:">
@@ -124,12 +136,26 @@ export class WebDAVSync {
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => {
           const data = Buffer.concat(chunks);
-          resolve({ status: res.statusCode || 500, headers: res.headers || {}, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text: data.toString('utf-8') });
+          let text = '';
+          try { text = data.toString('utf-8'); } catch {}
+          resolve({ status: res.statusCode || 500, headers: res.headers || {}, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
         });
       });
-      req.on('error', reject);
+      req.on('error', (err: any) => {
+        if (err.code === 'EPIPE' || err.message?.includes('socket hang up')) {
+          const bodySize = body ? ` (body size: ${body.byteLength} bytes)` : '';
+          reject(new Error(`Connection closed by server during request${bodySize} — EPIPE/socket hang up. The server may have a request size limit or does not support the requested operation.`));
+        } else {
+          reject(err);
+        }
+      });
       req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
-      if (body) req.write(Buffer.from(body));
+      if (body) {
+        if (!headers['Content-Length']) {
+          headers['Content-Length'] = String(body.byteLength);
+        }
+        req.write(Buffer.from(body));
+      }
       req.end();
     });
   }
@@ -195,25 +221,49 @@ export class WebDAVSync {
     return this.parsePropfindMultistatus(response.text);
   }
 
-  async uploadFile(path: string, data: Uint8Array, ifMatch?: string, onProgress?: (p: UploadProgress) => void): Promise<string | null> {
+  async uploadFile(path: string, data: Uint8Array, ifMatch?: string, onProgress?: (p: UploadProgress) => void, displayName?: string): Promise<string | null> {
     const chunkSizeBytes = this.chunkSizeMb * 1024 * 1024;
+    const fileSizeMb = (data.length / (1024 * 1024)).toFixed(1);
+    let useChunked = data.length > chunkSizeBytes;
 
-    if (data.length > chunkSizeBytes) {
-      return await this.chunkedUpload(path, data, ifMatch, onProgress);
+    if (useChunked) {
+      console.log(`[uploadFile] File size ${fileSizeMb}MB > chunkSize ${this.chunkSizeMb}MB, trying chunked upload`);
+      try {
+        return await this.chunkedUpload(path, data, ifMatch, onProgress, displayName);
+      } catch (e) {
+        console.warn(`[uploadFile] Chunked upload failed, falling back to regular PUT: ${e.message}`);
+      }
+    } else {
+      console.log(`[uploadFile] File size ${fileSizeMb}MB <= chunkSize ${this.chunkSizeMb}MB, using regular PUT`);
     }
 
+    const dataSizeMb = (data.length / (1024 * 1024)).toFixed(1);
     const headers: Record<string, string> = {
       Authorization: this.getAuthHeader(),
       'Content-Type': 'application/octet-stream',
     };
     if (ifMatch !== undefined) headers['If-Match'] = ifMatch;
-    const response = await this.makeRequest('PUT', this.getFullUrl(path), headers, this.uint8ArrayToBuffer(data));
+    const timeout = Math.max(300000, chunkSizeBytes / 10000);
+    console.log(`[uploadFile] PUT ${path} (${dataSizeMb}MB, timeout=${timeout}ms)`);
+    await new Promise(r => setTimeout(r, 5));
+    let response: RequestResult;
+    try {
+      response = await this.makeRequest('PUT', this.getFullUrl(path), headers, this.uint8ArrayToBuffer(data), timeout);
+      console.log(`[uploadFile] PUT ${path} status: ${response.status}`);
+    } catch (e) {
+      const msg = `Upload failed for ${path}: ${e.message}`;
+      console.error(`[uploadFile] PUT ${path} threw: ${e.message}`);
+      if (e.message?.includes('EPIPE') || e.message?.includes('socket hang up')) {
+        throw new Error(`${msg}\n\nThe server closed the connection during upload. This usually means the file is too large for a single PUT request or the server does not support Nextcloud's chunked upload protocol (OC-Chunked).\nOptions:\n1. Ensure your WebDAV URL is a Nextcloud instance\n2. Try reducing the chunk size in Advanced settings\n3. If not using Nextcloud, consider a server that supports larger uploads`);
+      }
+      throw new Error(msg);
+    }
     if (ifMatch !== undefined && response.status === 412) return null;
     if (response.status >= 400) throw new Error(`Upload failed for ${path} (HTTP ${response.status})`);
     return response.headers['etag'] || null;
   }
 
-  private async chunkedUpload(remotePath: string, data: Uint8Array, ifMatch?: string, onProgress?: (p: UploadProgress) => void): Promise<string | null> {
+  private async chunkedUpload(remotePath: string, data: Uint8Array, ifMatch?: string, onProgress?: (p: UploadProgress) => void, displayName?: string): Promise<string | null> {
     const chunkSizeBytes = this.chunkSizeMb * 1024 * 1024;
     const uploadId = this.generateUploadId();
     const uploadBaseUrl = this.getUploadsBaseUrl();
@@ -224,41 +274,80 @@ export class WebDAVSync {
     const timeout = Math.max(300000, chunkSizeBytes / 10000); // 5min min, scales with chunk size
 
     const totalChunks = Math.ceil(data.length / chunkSizeBytes);
-    const shortName = remotePath.split('/').pop() || remotePath;
+    const shortName = displayName || remotePath.split('/').pop() || remotePath;
 
+    const fileSizeMb = (data.length / (1024 * 1024)).toFixed(1);
+    console.log(`[chunkedUpload] Starting. remotePath=${remotePath}, size=${fileSizeMb}MB, totalChunks=${totalChunks}, chunkSize=${this.chunkSizeMb}MB`);
+    console.log(`[chunkedUpload] Uploads endpoint URL: ${uploadBaseUrl}`);
+    console.log(`[chunkedUpload] Upload dir URL: ${uploadDirUrl}`);
+    console.log(`[chunkedUpload] Target URL: ${targetUrl}`);
+
+    // Create upload directory
+    console.log(`[chunkedUpload] MKCOL → ${uploadDirUrl}`);
+    let mkcolRes: RequestResult;
     try {
-      await this.makeRequest('MKCOL', uploadDirUrl, { Authorization: auth });
+      mkcolRes = await this.makeRequest('MKCOL', uploadDirUrl, { Authorization: auth });
+      console.log(`[chunkedUpload] MKCOL status: ${mkcolRes.status}`);
     } catch (e) {
-      // collection may already exist from a previous attempt
+      console.log(`[chunkedUpload] MKCOL threw: ${e.message}`);
+      throw new Error(`Chunked upload: MKCOL failed for upload directory — ${e.message}. Uploads endpoint: ${uploadBaseUrl}. Make sure the WebDAV URL is a Nextcloud instance and the user ID is correct.`);
+    }
+    if (mkcolRes.status >= 400 && mkcolRes.status !== 405) {
+      throw new Error(`Chunked upload: failed to create upload directory (HTTP ${mkcolRes.status}). Uploads endpoint: ${uploadBaseUrl}. Check that the WebDAV URL is a Nextcloud instance and the user ID is correct.`);
     }
 
+    // Upload each chunk
     for (let i = 0; i < totalChunks; i++) {
       if (onProgress) onProgress({ fileName: shortName, chunk: i + 1, totalChunks });
 
+      await new Promise(r => setTimeout(r, 5));
       const start = i * chunkSizeBytes;
       const end = Math.min(start + chunkSizeBytes, data.length);
       const chunk = data.slice(start, end);
       const chunkName = String(i + 1).padStart(10, '0');
       const chunkUrl = `${uploadDirUrl}${chunkName}`;
+      const chunkSizeKb = (chunk.length / 1024).toFixed(0);
 
-      await this.makeRequest('PUT', chunkUrl, {
-        Authorization: auth,
-        'Content-Type': 'application/octet-stream',
-        'OC-Chunked': '1',
-      }, this.uint8ArrayToBuffer(chunk), timeout);
+      console.log(`[chunkedUpload] PUT chunk ${i + 1}/${totalChunks} (${chunkSizeKb}KB) → ${chunkUrl}`);
+      let putRes: RequestResult;
+      try {
+        putRes = await this.makeRequest('PUT', chunkUrl, {
+          Authorization: auth,
+          'Content-Type': 'application/octet-stream',
+          'OC-Chunked': '1',
+        }, this.uint8ArrayToBuffer(chunk), timeout);
+        console.log(`[chunkedUpload] Chunk ${i + 1} PUT status: ${putRes.status}`);
+      } catch (e) {
+        console.log(`[chunkedUpload] Chunk ${i + 1} PUT threw: ${e.message}`);
+        throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${remotePath} — ${e.message}`);
+      }
+
+      if (putRes.status >= 400) {
+        throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${remotePath} (HTTP ${putRes.status})`);
+      }
     }
 
+    // Assemble chunks
     const assembleUrl = `${uploadDirUrl}.file`;
-
-    const moveRes = await this.makeRequest('MOVE', assembleUrl, {
-      Authorization: auth,
-      Destination: targetUrl,
-      'OC-Assemble': '1',
-    });
+    console.log(`[chunkedUpload] MOVE assemble → ${assembleUrl}, Destination: ${targetUrl}`);
+    let moveRes: RequestResult;
+    try {
+      moveRes = await this.makeRequest('MOVE', assembleUrl, {
+        Authorization: auth,
+        Destination: targetUrl,
+        'OC-Assemble': '1',
+      });
+      console.log(`[chunkedUpload] MOVE status: ${moveRes.status}`);
+    } catch (e) {
+      console.log(`[chunkedUpload] MOVE threw: ${e.message}`);
+      throw new Error(`Chunked upload assembly failed for ${remotePath} — ${e.message}`);
+    }
 
     if (moveRes.status >= 400) {
       throw new Error(`Chunked upload assembly failed for ${remotePath} (HTTP ${moveRes.status})`);
     }
+
+    console.log(`[chunkedUpload] Successfully uploaded ${remotePath}`);
 
     // Fetch etag of assembled file
     try {
@@ -310,10 +399,76 @@ export class WebDAVSync {
     return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
-  async downloadFile(path: string): Promise<DownloadResult> {
-    const response = await this.makeRequest('GET', this.getFullUrl(path), { Authorization: this.getAuthHeader() });
-    if (response.status >= 400) throw new Error(`Download failed for ${path} (HTTP ${response.status})`);
-    return { data: new Uint8Array(response.arrayBuffer), etag: response.headers['etag'] || null };
+  async downloadFile(path: string, onProgress?: (p: DownloadProgress) => void): Promise<DownloadResult> {
+    const auth = { Authorization: this.getAuthHeader() };
+    const url = this.getFullUrl(path);
+    const CHUNK_TIMEOUT = 60000;
+    const MAX_RETRIES = 3;
+
+    let contentLength = 0;
+    let etag: string | null = null;
+    try {
+      const headRes = await this.makeRequest('HEAD', url, auth);
+      if (headRes.status < 400) {
+        contentLength = parseInt(headRes.headers['content-length'] || '0', 10);
+        etag = headRes.headers['etag'] || null;
+      }
+    } catch {}
+
+    if (contentLength <= WebDAVSync.PARALLEL_DOWNLOAD_THRESHOLD) {
+      const res = await this.makeRequest('GET', url, auth);
+      if (res.status >= 400) throw new Error(`Download failed for ${path} (HTTP ${res.status})`);
+      return { data: new Uint8Array(res.arrayBuffer), etag: etag || res.headers['etag'] || null };
+    }
+
+    const ranges: { start: number; end: number }[] = [];
+    for (let s = 0; s < contentLength; s += WebDAVSync.CHUNK_DOWNLOAD_SIZE) {
+      const e = Math.min(s + WebDAVSync.CHUNK_DOWNLOAD_SIZE - 1, contentLength - 1);
+      ranges.push({ start: s, end: e });
+    }
+
+    const totalChunks = ranges.length;
+
+    const fetchOne = async (r: { start: number; end: number }, i: number): Promise<RequestResult> => {
+      let lastErr: any;
+      for (let a = 1; a <= MAX_RETRIES; a++) {
+        try {
+          const res = await this.makeRequest('GET', url, {
+            Authorization: auth.Authorization,
+            Range: `bytes=${r.start}-${r.end}`,
+          }, undefined, CHUNK_TIMEOUT);
+          if (res.status === 206) {
+            if (onProgress) onProgress({ chunk: i + 1, totalChunks });
+            return res;
+          }
+          lastErr = new Error(`HTTP ${res.status}`);
+        } catch (e) {
+          lastErr = e;
+        }
+        if (a < MAX_RETRIES) await WebDAVSync.sleep();
+      }
+      throw lastErr;
+    };
+
+    let results: RequestResult[];
+    try {
+      results = await Promise.all(ranges.map((r, i) => fetchOne(r, i)));
+    } catch (e) {
+      console.warn(`[downloadFile] Chunk download failed after ${MAX_RETRIES} retries: ${e.message}, falling back to single GET`);
+      const fallback = await this.makeRequest('GET', url, auth, undefined, CHUNK_TIMEOUT * 2);
+      if (fallback.status >= 400) throw new Error(`Download failed for ${path} (HTTP ${fallback.status})`);
+      return { data: new Uint8Array(fallback.arrayBuffer), etag: etag || fallback.headers['etag'] || null };
+    }
+
+    const totalSize = results.reduce((s, r) => s + r.arrayBuffer.byteLength, 0);
+    const data = new Uint8Array(totalSize);
+    let offset = 0;
+    for (const res of results) {
+      data.set(new Uint8Array(res.arrayBuffer), offset);
+      offset += res.arrayBuffer.byteLength;
+    }
+
+    return { data, etag };
   }
 
   async deleteFile(path: string, ifMatch?: string): Promise<boolean> {
