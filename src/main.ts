@@ -62,6 +62,8 @@ export default class ObsyncPlugin extends Plugin {
   private syncManifest: SyncManifest = EMPTY_MANIFEST;
   private encToPlain: Map<string, string> = new Map();
   private plainToEnc: Map<string, string> = new Map();
+  private shaCache: Map<string, { sha256: string; mtime: number; size: number }> = new Map();
+  private shaCacheDirty = false;
   private journal = new JournalManager();
   private statusBar: HTMLElement;
   private pushCurrent = 0;
@@ -216,6 +218,55 @@ export default class ObsyncPlugin extends Plugin {
 
   private get syncManifestPath(): string {
     return `${this.cacheDir}/sync-manifest.json`;
+  }
+
+  private get shaCachePath(): string {
+    return `${this.cacheDir}/obsync-sha-cache.json`;
+  }
+
+  private async loadShaCache(): Promise<void> {
+    try {
+      const raw = await this.app.vault.adapter.read(this.shaCachePath);
+      const obj = JSON.parse(raw);
+      this.shaCache = new Map(Object.entries(obj));
+    } catch {
+      this.shaCache = new Map();
+    }
+    this.shaCacheDirty = false;
+  }
+
+  private async saveShaCache(): Promise<void> {
+    if (!this.shaCacheDirty) return;
+    try {
+      const obj = Object.fromEntries(this.shaCache);
+      await this.app.vault.adapter.write(this.shaCachePath, JSON.stringify(obj));
+    } catch (e) {
+      console.warn('Failed to save SHA cache:', e);
+    }
+    this.shaCacheDirty = false;
+  }
+
+  private async getSha256ForFile(vaultPath: string): Promise<string | null> {
+    try {
+      const stat = await this.app.vault.adapter.stat(vaultPath);
+      if (stat) {
+        const cached = this.shaCache.get(vaultPath);
+        if (cached && cached.mtime === stat.mtime && cached.size === stat.size) {
+          return cached.sha256;
+        }
+      }
+      const file = this.app.vault.getAbstractFileByPath(vaultPath);
+      if (!(file instanceof TFile)) return null;
+      const data = new Uint8Array(await this.app.vault.readBinary(file));
+      const sha256 = await this.computeContentSha256(data);
+      if (stat) {
+        this.shaCache.set(vaultPath, { sha256, mtime: stat.mtime, size: stat.size });
+        this.shaCacheDirty = true;
+      }
+      return sha256;
+    } catch {
+      return null;
+    }
   }
 
   private async loadManifest(): Promise<void> {
@@ -401,6 +452,16 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
+  private async cacheShaForFile(vaultPath: string, sha256: string): Promise<void> {
+    try {
+      const stat = await this.app.vault.adapter.stat(vaultPath);
+      if (stat) {
+        this.shaCache.set(vaultPath, { sha256, mtime: stat.mtime, size: stat.size });
+        this.shaCacheDirty = true;
+      }
+    } catch {}
+  }
+
   private async ensureLocalFilenames(): Promise<void> {
     const allFiles = this.app.vault.getFiles();
     const usedNames = new Set(allFiles.map(f => f.path));
@@ -485,6 +546,7 @@ export default class ObsyncPlugin extends Plugin {
       await this.ensureLocalFilenames();
 
       await this.loadManifest();
+      await this.loadShaCache();
       this.buildSegmentMaps();
       await this.journal.save();
       await this.journal.load(this.app.vault.adapter, `${this.cacheDir}/obsync-journal.json`);
@@ -578,7 +640,9 @@ export default class ObsyncPlugin extends Plugin {
           try {
             const content = new Uint8Array(await this.app.vault.readBinary(localFile));
             await this.yieldToUI();
-            const contentSha = await this.computeContentSha256(content);
+        const contentSha = await this.computeContentSha256(content);
+        await this.cacheShaForFile(vaultPath, contentSha);
+            await this.cacheShaForFile(entry.vaultPath, contentSha);
             const syncEntry = this.syncManifest.files[entry.vaultPath];
 
             let remotePath: string;
@@ -680,12 +744,16 @@ export default class ObsyncPlugin extends Plugin {
         const syncEntry = this.syncManifest.files[vaultPath];
         if (!wasNewPath && syncEntry && syncEntry.etag === remoteEtag) continue;
 
+        const shortName = vaultPath.split('/').pop();
+        this.setStatus(`Pulling: ${shortName}`);
+        await this.yieldToUI();
+
         /* Check if local file matches remote manifest SHA — skip download entirely */
         if (wasNewPath) {
           const localFile = this.app.vault.getAbstractFileByPath(vaultPath);
           const expectedSha = remoteShaByVaultPath.get(vaultPath);
-          if (expectedSha && localFile instanceof TFile) {
-            const localSha = await this.computeContentSha256(new Uint8Array(await this.app.vault.readBinary(localFile)));
+          if (expectedSha && localFile instanceof TFile && (localFile.stat.size || 0) < 50 * 1024 * 1024) {
+            const localSha = await this.getSha256ForFile(vaultPath);
             if (localSha === expectedSha) {
               this.log(`[pull] skip download ${vaultPath} — SHA matches remote manifest`);
               const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
@@ -694,10 +762,6 @@ export default class ObsyncPlugin extends Plugin {
             }
           }
         }
-
-        const shortName = vaultPath.split('/').pop();
-        this.setStatus(`Pulling: ${shortName}`);
-        await this.yieldToUI();
 
         this.log(`[pull] downloading ${vaultPath} — wasNewPath=${wasNewPath} hasEntry=${!!syncEntry}${syncEntry ? ` etagMatch=${syncEntry.etag === remoteEtag} (local=${syncEntry.etag}, remote=${remoteEtag})` : ''}`);
 
@@ -728,6 +792,7 @@ export default class ObsyncPlugin extends Plugin {
           if (localFile instanceof TFile && syncEntry) {
             const currentContent = new Uint8Array(await this.app.vault.readBinary(localFile));
             const currentSha = await this.computeContentSha256(currentContent);
+            await this.cacheShaForFile(vaultPath, currentSha);
 
             if (currentSha === remoteSha) {
               // Content identical, skip write, just update manifest etag
@@ -750,6 +815,7 @@ export default class ObsyncPlugin extends Plugin {
           } else if (localFile instanceof TFile) {
             const currentContent = new Uint8Array(await this.app.vault.readBinary(localFile));
             const currentSha = await this.computeContentSha256(currentContent);
+            await this.cacheShaForFile(vaultPath, currentSha);
             if (currentSha !== remoteSha) {
               await this.writeFileToVault(vaultPath, decrypted);
               await this.yieldToUI();
@@ -780,6 +846,7 @@ export default class ObsyncPlugin extends Plugin {
           if (localFile instanceof TFile) {
             const currentContent = new Uint8Array(await this.app.vault.readBinary(localFile));
             const currentSha = await this.computeContentSha256(currentContent);
+            await this.cacheShaForFile(vaultPath, currentSha);
             if (currentSha === syncEntry.localSha256) {
               try {
                 await this.app.vault.delete(localFile);
@@ -898,6 +965,7 @@ export default class ObsyncPlugin extends Plugin {
       this.journal.clearCompleted(journalCompleted);
 
       await this.saveManifest();
+      await this.saveShaCache();
       await this.uploadManifestToRemote();
       await this.saveSettings();
 
@@ -978,6 +1046,7 @@ export default class ObsyncPlugin extends Plugin {
           const decrypted = await this.cryptoManager.decryptBytes(encData);
           const sha256 = await this.computeContentSha256(decrypted);
           await this.writeFileToVault(vaultPath, decrypted);
+          await this.cacheShaForFile(vaultPath, sha256);
 
           const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
           this.syncManifest.files[vaultPath] = { remotePath: entry.href, etag: etag || '', localMtime: mtime, localSha256: sha256 };
