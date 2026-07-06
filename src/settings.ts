@@ -302,7 +302,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .setDesc('Download and decrypt all files from WebDAV, rebuilding vault state')
       .addButton(btn => btn
         .setButtonText('Restore Now')
-        .setDestructive()
+        // eslint-disable-next-line @typescript-eslint/no-deprecated -- setWarning supported, setDestructive unavailable in this Obsidian version
+        .setWarning()
         .onClick(() => this.plugin.restoreFromWebDAV()));
   }
 }
