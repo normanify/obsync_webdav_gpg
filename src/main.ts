@@ -416,7 +416,7 @@ export default class ObsyncPlugin extends Plugin {
   private getExcludedPrefixes(): string[] {
     const configDir = this.app.vault.configDir;
     return this.settings.excludePaths
-      .replace(/\.obsidian/g, configDir)
+      .replace(/<configDir>/g, configDir)
       .split(',')
       .map(s => s.trim())
       .filter(s => s.length > 0);

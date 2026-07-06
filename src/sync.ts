@@ -81,22 +81,9 @@ export class WebDAVSync {
     return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
   }
 
-  private async makeRequest(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
-    if (!this.allowSelfSigned)
-      return this.makeRequestViaObsidian(method, fullUrl, headers, body);
-
-    try {
-      return await this.makeRequestViaNode(method, fullUrl, headers, body, timeoutMs);
-    } catch (e) {
-      const msg = String(e);
-      if (msg.includes('certificate') || msg.includes('CERT') || msg.includes('UNABLE_TO_VERIFY')) {
-        setEnvTlsReject(true);
-        return this.makeRequestViaObsidian(method, fullUrl, headers, body);
-      }
-      throw e;
-    }
+  private async makeRequest(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, _timeoutMs = 30000): Promise<RequestResult> {
+    return this.makeRequestViaObsidian(method, fullUrl, headers, body);
   }
-
   private async makeRequestViaObsidian(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer): Promise<RequestResult> {
     const response = await requestUrl({ url: fullUrl, method, headers, body, throw: false });
     const headersLower: Record<string, string> = {};
@@ -104,60 +91,6 @@ export class WebDAVSync {
       headersLower[k.toLowerCase()] = v;
     }
     return { status: response.status, headers: headersLower, arrayBuffer: response.arrayBuffer, text: response.text };
-  }
-
-  private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
-    let httpsMod: any, httpMod: any;
-    try {
-      httpsMod = await import('https');
-      httpMod = await import('http');
-    } catch {
-      throw new Error('Node.js http/https modules not available');
-    }
-
-    return new Promise((resolve, reject) => {
-      const urlObj = new URL(fullUrl);
-      const isHttps = urlObj.protocol === 'https:';
-      const port = urlObj.port || (isHttps ? 443 : 80);
-      const mod = isHttps ? httpsMod : httpMod;
-      const agent = isHttps ? new httpsMod.Agent({ rejectUnauthorized: false }) : undefined;
-
-      const options: Record<string, any> = {
-        hostname: urlObj.hostname,
-        port: parseInt(port.toString(), 10),
-        path: urlObj.pathname + urlObj.search,
-        method,
-        headers,
-      };
-      if (isHttps) { options.agent = agent; options.rejectUnauthorized = false; }
-
-      const req = mod.request(options, (res: any) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          const data = Buffer.concat(chunks);
-          let text = '';
-          try { text = data.toString('utf-8'); } catch { /* binary data */ }
-          resolve({ status: res.statusCode || 500, headers: res.headers || {}, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
-        });
-      });
-      req.on('error', (err: any) => {
-        if (err.code === 'EPIPE' || err.message?.includes('socket hang up')) {
-          const bodySize = body ? ` (body size: ${body.byteLength} bytes)` : '';
-          reject(new Error(`Connection closed by server during request${bodySize} — EPIPE/socket hang up. The server may have a request size limit or does not support the requested operation.`));
-        } else {
-          reject(new Error(String(err)));
-        }
-      });
-      req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
-      if (body) {
-        if (!headers['Content-Length']) {
-          headers['Content-Length'] = String(body.byteLength);
-        }
-        req.write(Buffer.from(body));
-      }
-      req.end();
-    });
   }
 
   async testConnection(): Promise<void> {
@@ -544,13 +477,3 @@ export class WebDAVSync {
   }
 }
 
-let envTlsRejectSet = false;
-function setEnvTlsReject(state: boolean): void {
-  if (state && !envTlsRejectSet) {
-    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-    envTlsRejectSet = true;
-  } else if (!state && envTlsRejectSet) {
-    delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-    envTlsRejectSet = false;
-  }
-}

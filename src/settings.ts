@@ -24,7 +24,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   privateKey: '',
   passphrase: '',
   storePassphrase: false,
-  excludePaths: '.obsidian/plugins/,.trash/',
+  excludePaths: '<configDir>/plugins/,.trash/',
   allowSelfSignedCerts: false,
   autoSyncOnSave: false,
   chunkSizeMb: 90,
@@ -42,10 +42,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-
-    new Setting(containerEl).setName('WebDAV GPG Sync').setHeading();
-
-    new Setting(containerEl).setName('WebDAV Configuration').setHeading();
+    new Setting(containerEl).setName('Connection').setHeading();
 
     new Setting(containerEl)
       .setName('WebDAV URL')
