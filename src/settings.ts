@@ -43,9 +43,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Obsync WebDAV GPG' });
+    containerEl.createEl('h2', { text: 'WebDAV GPG Sync' });
 
-    containerEl.createEl('h3', { text: 'WebDAV Configuration' });
+    new Setting(containerEl).setName('WebDAV Configuration').setHeading();
 
     new Setting(containerEl)
       .setName('WebDAV URL')
@@ -110,7 +110,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    containerEl.createEl('h3', { text: 'GPG Keys' });
+    new Setting(containerEl).setName('GPG Keys').setHeading();
 
     const pubLoaded = !!this.plugin.cryptoManager['publicKey'];
     const privLoaded = !!this.plugin.cryptoManager['privateKey'];
@@ -177,8 +177,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           this.display();
         });
         text.inputEl.rows = 4;
-        text.inputEl.style.fontFamily = 'var(--font-monospace)';
-        text.inputEl.style.fontSize = '11px';
+        text.inputEl.addClass('obsync-mono');
       });
 
     new Setting(containerEl)
@@ -196,8 +195,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           }
         });
         text.inputEl.rows = 4;
-        text.inputEl.style.fontFamily = 'var(--font-monospace)';
-        text.inputEl.style.fontSize = '11px';
+        text.inputEl.addClass('obsync-mono');
       });
 
     if (privLoaded) {
@@ -218,7 +216,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           }));
     }
 
-    containerEl.createEl('h3', { text: 'Auto Sync' });
+    new Setting(containerEl).setName('Auto Sync').setHeading();
 
     new Setting(containerEl)
       .setName('Auto Sync on Save')
@@ -230,7 +228,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    containerEl.createEl('h3', { text: 'Advanced' });
+    new Setting(containerEl).setName('Advanced').setHeading();
 
     new Setting(containerEl)
       .setName('Chunk Size (MB)')
@@ -279,7 +277,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
         .setButtonText('Import')
         .onClick(() => this.plugin.importConfig()));
 
-    containerEl.createEl('h3', { text: 'Sync Actions' });
+    new Setting(containerEl).setName('Sync Actions').setHeading();
 
     new Setting(containerEl)
       .setName('Sync to WebDAV')

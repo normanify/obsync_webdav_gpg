@@ -1,28 +1,4 @@
-.obsync-status {
-  padding: 8px 12px;
-  border-radius: 4px;
-  margin-bottom: 8px;
-  font-size: 13px;
-}
-
-.obsync-status.success {
-  background-color: var(--color-green);
-  color: var(--text-on-accent);
-}
-
-.obsync-status.error {
-  background-color: var(--color-red);
-  color: var(--text-on-accent);
-}
-
-.obsync-status.info {
-  background-color: var(--interactive-accent);
-  color: var(--text-on-accent);
-}
-
-.setting-item-info textarea {
-  width: 100%;
-  min-height: 80px;
+.obsync-mono {
   font-family: var(--font-monospace);
   font-size: 11px;
 }
