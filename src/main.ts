@@ -1,8 +1,8 @@
 import { Plugin, Notice, TFile, TFolder, TAbstractFile } from 'obsidian';
 import { CryptoManager } from './crypto';
-import { WebDAVSync, PropfindEntry } from './sync';
+import { WebDAVSync } from './sync';
 import { ObsyncSettings, DEFAULT_SETTINGS, ObsyncSettingTab } from './settings';
-import { JournalManager, JournalEntryType } from './journal';
+import { JournalManager } from './journal';
 
 interface FileSyncEntry {
   remotePath: string;
@@ -148,9 +148,10 @@ export default class ObsyncPlugin extends Plugin {
           // Open with default system app
           leaf.detach();
           try {
-            const { shell } = require('electron');
-            const filePath = this.app.vault.adapter.getFullPath(file.path);
-            shell.openPath(filePath);
+            // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
+            const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
+            const shellPath = this.app.vault.adapter.getFullPath(file.path);
+            electron.shell.openPath(shellPath);
           } catch (e) {
             console.error('[on-demand] openWithDefaultApp failed:', e);
             new Notice('Failed to open file externally');
@@ -180,8 +181,9 @@ export default class ObsyncPlugin extends Plugin {
                 if (leaf) await leaf.openFile(file);
               } else {
                 try {
-                  const { shell } = require('electron');
-                  shell.openPath(this.app.vault.adapter.getFullPath(file.path));
+                  // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
+                  const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
+                  electron.shell.openPath(this.app.vault.adapter.getFullPath(file.path));
                 } catch { /* ignore */ }
               }
               new Notice(`Downloaded: ${file.name}`);
@@ -249,7 +251,8 @@ export default class ObsyncPlugin extends Plugin {
     }
     if (this._origShellOpenPath) {
       try {
-        const electron = require('electron');
+        // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
+        const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
         if (electron?.shell) electron.shell.openPath = this._origShellOpenPath;
       } catch { /* ignore */ }
       this._origShellOpenPath = null;
@@ -290,8 +293,8 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const data = (await this.loadData()) || {};
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    const loaded = (await this.loadData()) as Partial<ObsyncSettings> | undefined;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded || {});
   }
 
   async saveSettings(): Promise<void> {
@@ -337,7 +340,8 @@ export default class ObsyncPlugin extends Plugin {
   private async saveShaCache(): Promise<void> {
     if (!this.shaCacheDirty) return;
     try {
-      const obj = Object.fromEntries(this.shaCache);
+      const obj: Record<string, { sha256: string; mtime: number; size: number }> = {};
+      for (const [k, v] of this.shaCache) obj[k] = v;
       await this.app.vault.adapter.write(this.shaCachePath, JSON.stringify(obj));
     } catch (e) {
       console.warn('Failed to save SHA cache:', e);
@@ -581,24 +585,24 @@ export default class ObsyncPlugin extends Plugin {
 
   private _patchShellOpenPath(): void {
     try {
-      const electron = require('electron');
+      // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
+      const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
       if (!electron?.shell?.openPath) return;
-      this._origShellOpenPath = electron.shell.openPath.bind(electron.shell);
-      const self = this;
-      electron.shell.openPath = async function (filePath: string): Promise<string> {
-        if (self.settings.onDemand) {
-          const vaultBase = self.app.vault.adapter.getFullPath('/');
+      this._origShellOpenPath = electron.shell.openPath.bind(electron.shell) as (path: string) => Promise<string>;
+      electron.shell.openPath = async (filePath: string): Promise<string> => {
+        if (this.settings.onDemand) {
+          const vaultBase = this.app.vault.adapter.getFullPath('/');
           const relPath = filePath.startsWith(vaultBase)
             ? filePath.slice(vaultBase.length).replace(/^\//, '')
             : null;
           if (relPath) {
-            const file = self.app.vault.getFileByPath(relPath);
-            if (file && file.stat.size === 0 && self.syncManifest.files[file.path]) {
-              await self.ensureOnDemandHydrated(file.path);
+            const file = this.app.vault.getFileByPath(relPath);
+            if (file && file.stat.size === 0 && this.syncManifest.files[file.path]) {
+              await this.ensureOnDemandHydrated(file.path);
             }
           }
         }
-        return (self._origShellOpenPath as (path: string) => Promise<string>)(filePath);
+        return (this._origShellOpenPath as (path: string) => Promise<string>)(filePath);
       };
     } catch { /* shell.openPath not available */ }
   }
@@ -749,7 +753,7 @@ export default class ObsyncPlugin extends Plugin {
         remotePathToVault.set(entry.remotePath, vp);
       }
 
-      let pulled = 0, localDel = 0, pushed = 0, remoteDel = 0, conflicts = 0, onDemandPlaceholders = 0;
+      let pulled = 0, localDel = 0, pushed = 0, remoteDel = 0, conflicts = 0;
 
       /* ── PROCESS JOURNAL (Local changes → Remote) ── */
       this.setStatus('Processing journal...');
@@ -945,7 +949,6 @@ export default class ObsyncPlugin extends Plugin {
           await this.writeFileToVault(vaultPath, new Uint8Array(0));
           this.syncManifest.files[safePath] = { remotePath, etag: remoteEtag, localMtime: Date.now(), localSha256: '' };
           this.log(`[pull] on-demand placeholder ${safePath}`);
-          onDemandPlaceholders++;
           continue;
         }
 
@@ -1033,7 +1036,7 @@ export default class ObsyncPlugin extends Plugin {
             await this.cacheShaForFile(vaultPath, currentSha);
             if (currentSha === syncEntry.localSha256) {
               try {
-                await this.app.vault.delete(localFile);
+                await this.app.fileManager.trashFile(localFile);
                 localDel++;
               } catch (e) {
                 console.error(`Failed to delete local ${vaultPath}:`, e);

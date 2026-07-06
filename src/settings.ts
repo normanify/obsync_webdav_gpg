@@ -41,6 +41,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- display() still works; getSettingDefinitions migration deferred
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
@@ -301,7 +302,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .setDesc('Download and decrypt all files from WebDAV, rebuilding vault state')
       .addButton(btn => btn
         .setButtonText('Restore Now')
-        .setWarning()
+        .setDestructive()
         .onClick(() => this.plugin.restoreFromWebDAV()));
   }
 }

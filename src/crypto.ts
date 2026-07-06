@@ -18,9 +18,7 @@ function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 }
-
-const HYBRID_MAGIC_BYTES = new Uint8Array([79, 66, 83, 89, 78, 67, 45, 72]); // "OBSYNC-H"
-
+ 
 export class CryptoManager {
   private publicKey: openpgp.PublicKey | null = null;
   private privateKey: openpgp.PrivateKey | null = null;

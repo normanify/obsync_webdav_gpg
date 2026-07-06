@@ -1,6 +1,34 @@
 import { requestUrl } from 'obsidian';
-import type { IncomingMessage } from 'http';
-import type { RequestOptions } from 'https';
+
+interface NodeRequestOptions {
+  hostname: string;
+  port: number;
+  path: string;
+  method: string;
+  headers: Record<string, string>;
+  agent?: unknown;
+  rejectUnauthorized?: boolean;
+}
+
+interface NodeIncomingMessage {
+  statusCode?: number;
+  headers: Record<string, string | string[] | undefined>;
+  on(event: 'data', cb: (chunk: Buffer) => void): void;
+  on(event: 'end', cb: () => void): void;
+}
+
+interface NodeClientRequest {
+  on(event: 'error', cb: (err: Error) => void): void;
+  setTimeout(ms: number, cb: () => void): void;
+  write(chunk: Buffer): void;
+  end(): void;
+  destroy(err: Error): void;
+}
+
+interface NodeModule {
+  Agent: new (opts?: Record<string, unknown>) => unknown;
+  request(opts: NodeRequestOptions, cb: (res: NodeIncomingMessage) => void): NodeClientRequest;
+}
 
 interface RequestResult {
   status: number;
@@ -124,8 +152,8 @@ export class WebDAVSync {
 
   /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, n/no-unsupported-features/node-builtins -- require('https')/require('http') return untyped; Node.js builtins needed for self-signed cert support */
   private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
-    const httpsMod = require('https') as typeof import('https');
-    const httpMod = require('http') as typeof import('http');
+    const httpsMod = require('https') as NodeModule;
+    const httpMod = require('http') as NodeModule;
 
     return new Promise<RequestResult>((resolve, reject) => {
       const urlObj = new URL(fullUrl);
@@ -134,16 +162,16 @@ export class WebDAVSync {
       const mod = isHttps ? httpsMod : httpMod;
       const agent = isHttps ? new httpsMod.Agent({ rejectUnauthorized: false }) : undefined;
 
-      const opts: RequestOptions = {
+      const opts: NodeRequestOptions = {
         hostname: urlObj.hostname,
         port: parseInt(port.toString(), 10),
         path: urlObj.pathname + urlObj.search,
-        method: method as RequestOptions['method'],
+        method,
         headers: { 'User-Agent': 'Obsidian WebDAV Sync Plugin/1.0', ...headers },
       };
-      if (isHttps) { (opts as RequestOptions).agent = agent; (opts as RequestOptions).rejectUnauthorized = false; }
+      if (isHttps) { opts.agent = agent; opts.rejectUnauthorized = false; }
 
-      const req = mod.request(opts, (res: IncomingMessage) => {
+      const req = mod.request(opts, (res: NodeIncomingMessage) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => {
@@ -377,7 +405,7 @@ export class WebDAVSync {
           return entries[0].etag;
         }
       }
-    } catch (e) {
+    } catch {
       // non-critical
     }
 
@@ -446,7 +474,7 @@ export class WebDAVSync {
     const totalChunks = ranges.length;
 
     const fetchOne = async (r: { start: number; end: number }, i: number): Promise<RequestResult> => {
-      let lastErr: any;
+      let lastErr: Error | undefined;
       for (let a = 1; a <= MAX_RETRIES; a++) {
         try {
           const res = await this.makeRequest('GET', url, {
@@ -459,19 +487,20 @@ export class WebDAVSync {
           }
           lastErr = new Error(`HTTP ${res.status}`);
         } catch (e) {
-          lastErr = e;
+          lastErr = e instanceof Error ? e : new Error(String(e));
         }
         if (a < MAX_RETRIES) await WebDAVSync.sleep();
       }
-      throw lastErr;
+      throw lastErr || new Error('Chunk download failed after retries');
     };
 
     let results: RequestResult[];
     try {
       results = await Promise.all(ranges.map((r, i) => fetchOne(r, i)));
     } catch (e) {
-      console.warn(`[downloadFile] Chunk download failed after ${MAX_RETRIES} retries: ${e.message}, falling back to single GET`);
-      let lastErr: any;
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.warn(`[downloadFile] Chunk download failed after ${MAX_RETRIES} retries: ${errMsg}, falling back to single GET`);
+      let lastErr: Error | undefined;
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const fallback = await this.makeRequest('GET', url, auth, undefined, CHUNK_TIMEOUT * 2);
@@ -480,7 +509,7 @@ export class WebDAVSync {
           }
           lastErr = new Error(`HTTP ${fallback.status}`);
         } catch (e2) {
-          lastErr = e2;
+          lastErr = e2 instanceof Error ? e2 : new Error(String(e2));
         }
         if (attempt < 3) await WebDAVSync.sleep(2000 * attempt);
       }
