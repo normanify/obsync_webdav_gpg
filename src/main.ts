@@ -50,7 +50,12 @@ function uint8ArrayToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
+function normalizePath(p: string): string {
+  try { return p.normalize('NFC'); } catch { return p; }
+}
+
 function sanitizeVaultPath(vaultPath: string): string {
+  vaultPath = normalizePath(vaultPath);
   return vaultPath.split('/').map(seg => {
     return seg.replace(/[:\\*?"<>|]/g, '_');
   }).join('/');
@@ -77,6 +82,7 @@ export default class ObsyncPlugin extends Plugin {
   private _hydrationInProgress = new Map<string, Promise<void>>();
   private _origVaultReadBinary: ((file: TFile) => Promise<ArrayBuffer>) | null = null;
   private _origShellOpenPath: ((path: string) => Promise<string>) | null = null;
+  private _handlingFileOpen = new Set<string>();
 
   async onload(): Promise<void> {
     await this.detectPluginDir();
@@ -133,18 +139,22 @@ export default class ObsyncPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on('file-open', (file) => {
       if (!this.settings.onDemand || !file) return;
       if (file.stat.size !== 0) return;
-      if (!this.syncManifest.files[file.path]) return;
+      const fp = normalizePath(file.path);
+      if (this._handlingFileOpen.has(fp)) return;
+      if (!this.syncManifest.files[fp]) {
+        console.debug('[on-demand] manifest miss:', fp, 'keys:', Object.keys(this.syncManifest.files).slice(0, 3));
+        new Notice(`Not in sync manifest: ${file.name}`);
+        return;
+      }
+      this._handlingFileOpen.add(fp);
       new Notice(`Downloading ${file.name}...`);
-      this.ensureOnDemandHydrated(file.path).then(() => {
+      this.ensureOnDemandHydrated(fp).then(() => {
         const leaf = this.app.workspace.getLeaf(false);
-        if (!leaf || leaf.view?.file?.path !== file.path) return;
+        if (!leaf || normalizePath(leaf.view?.file?.path ?? '') !== fp) return;
         const ext = file.extension?.toLowerCase() || '';
         // Files that Obsidian can render natively
         if (['md', 'canvas', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'mp3', 'ogg', 'wav', 'm4a', 'flac', 'mp4', 'webm', 'ogv', 'pdf', 'epub'].includes(ext)) {
-          leaf.setViewState({
-            type: leaf.view.getViewType(),
-            state: leaf.view.getState()
-          }).catch(e => console.error('[on-demand] setViewState failed:', e));
+          leaf.openFile(this.app.vault.getFileByPath(file.path) || file).catch(e => console.error('[on-demand] openFile failed:', e));
         } else {
           // Open with default system app
           leaf.detach();
@@ -168,14 +178,15 @@ export default class ObsyncPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
       if (!this.settings.onDemand) return;
       if (!(file instanceof TFile)) return;
-      if (!this.syncManifest.files[file.path]) return;
+      const fp = normalizePath(file.path);
+      if (!this.syncManifest.files[fp]) return;
       menu.addItem((item) => {
         item.setTitle('Download on-demand')
           .setIcon('download')
           .onClick(async () => {
             new Notice(`Downloading ${file.name}...`);
             try {
-              await this.ensureOnDemandHydrated(file.path);
+              await this.ensureOnDemandHydrated(fp);
               const ext = file.extension?.toLowerCase() || '';
               if (['md', 'canvas', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'mp3', 'ogg', 'wav', 'm4a', 'flac', 'mp4', 'webm', 'ogv', 'pdf', 'epub'].includes(ext)) {
                 const leaf = this.app.workspace.getLeaf(false);
@@ -596,10 +607,10 @@ export default class ObsyncPlugin extends Plugin {
           const relPath = filePath.startsWith(vaultBase)
             ? filePath.slice(vaultBase.length).replace(/^\//, '')
             : null;
-          if (relPath) {
-            const file = this.app.vault.getFileByPath(relPath);
-            if (file && file.stat.size === 0 && this.syncManifest.files[file.path]) {
-              await this.ensureOnDemandHydrated(file.path);
+            if (relPath) {
+              const file = this.app.vault.getFileByPath(relPath);
+              if (file && file.stat.size === 0 && this.syncManifest.files[normalizePath(file.path)]) {
+                await this.ensureOnDemandHydrated(normalizePath(file.path));
             }
           }
         }
@@ -610,10 +621,11 @@ export default class ObsyncPlugin extends Plugin {
 
   private async _interceptVaultReadBinary(file: TFile): Promise<ArrayBuffer> {
     if (this.settings.onDemand && !this.isSyncing && file.stat.size === 0) {
-      const entry = this.syncManifest.files[file.path];
+      const fp = normalizePath(file.path);
+      const entry = this.syncManifest.files[fp];
       if (entry) {
         try {
-          await this.ensureOnDemandHydrated(file.path);
+          await this.ensureOnDemandHydrated(fp);
         } catch (e) {
           console.error('[on-demand] hydrate failed during readBinary, falling back to original:', e);
         }
@@ -623,7 +635,7 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   async hydrateFile(vaultPath: string): Promise<void> {
-    const syncEntry = this.syncManifest.files[vaultPath];
+    const syncEntry = this.syncManifest.files[normalizePath(vaultPath)];
     if (!syncEntry) { new Notice('File not found in sync manifest'); return; }
     try {
       this.setStatus(`Downloading ${vaultPath.split('/').pop()}...`);
