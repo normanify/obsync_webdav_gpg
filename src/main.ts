@@ -669,6 +669,7 @@ export default class ObsyncPlugin extends Plugin {
 
         const syncEntry = this.syncManifest.files[vaultPath];
         if (!wasNewPath && syncEntry && syncEntry.etag === remoteEtag) continue;
+        this.log(`[pull] downloading ${vaultPath} — wasNewPath=${wasNewPath} hasEntry=${!!syncEntry}${syncEntry ? ` etagMatch=${syncEntry.etag === remoteEtag} (local=${syncEntry.etag}, remote=${remoteEtag})` : ''}`);
 
         try {
           const { data: encData, etag: newEtagSrc } = await this.syncClient.downloadFile(
@@ -698,7 +699,12 @@ export default class ObsyncPlugin extends Plugin {
             const currentContent = new Uint8Array(await this.app.vault.readBinary(localFile));
             const currentSha = await this.computeContentSha256(currentContent);
 
-            if (currentSha === syncEntry.localSha256) {
+            if (currentSha === remoteSha) {
+              // Content identical, skip write, just update manifest etag
+              this.log(`[pull] skip write ${vaultPath} — content unchanged`);
+              const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
+              this.syncManifest.files[vaultPath] = { remotePath, etag: newEtag || '', localMtime: mtime, localSha256: remoteSha };
+            } else if (currentSha === syncEntry.localSha256) {
               await this.writeFileToVault(vaultPath, decrypted);
               await this.yieldToUI();
               const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
@@ -711,10 +717,23 @@ export default class ObsyncPlugin extends Plugin {
               new Notice(`Conflict: remote ${vaultPath} saved as ${conflictPath}`);
               conflicts++;
             }
-          } else {
+          } else if (localFile instanceof TFile) {
+            const currentContent = new Uint8Array(await this.app.vault.readBinary(localFile));
+            const currentSha = await this.computeContentSha256(currentContent);
+            if (currentSha !== remoteSha) {
+              await this.writeFileToVault(vaultPath, decrypted);
+              await this.yieldToUI();
+              pulled++;
+            } else {
+              this.log(`[pull] skip write ${vaultPath} — content unchanged`);
+            }
             const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
+            this.syncManifest.files[vaultPath] = { remotePath, etag: newEtag || '', localMtime: mtime, localSha256: remoteSha };
+          } else {
+            // New file, doesn't exist locally
             await this.writeFileToVault(vaultPath, decrypted);
             await this.yieldToUI();
+            const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
             this.syncManifest.files[vaultPath] = { remotePath, etag: newEtag || '', localMtime: mtime, localSha256: remoteSha };
             pulled++;
           }
