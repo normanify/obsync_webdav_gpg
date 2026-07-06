@@ -1,4 +1,6 @@
 import { requestUrl } from 'obsidian';
+import type { IncomingMessage } from 'http';
+import type { RequestOptions } from 'https';
 
 interface RequestResult {
   status: number;
@@ -120,39 +122,40 @@ export class WebDAVSync {
     return { status: response.status, headers: headersLower, arrayBuffer: response.arrayBuffer, text: response.text };
   }
 
-  /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, n/no-unsupported-features/node-builtins */
+  /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, n/no-unsupported-features/node-builtins -- require('https')/require('http') return untyped; Node.js builtins needed for self-signed cert support */
   private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
-    const httpsMod = require('https');
-    const httpMod = require('http');
+    const httpsMod = require('https') as typeof import('https');
+    const httpMod = require('http') as typeof import('http');
 
-    return new Promise((resolve, reject) => {
+    return new Promise<RequestResult>((resolve, reject) => {
       const urlObj = new URL(fullUrl);
       const isHttps = urlObj.protocol === 'https:';
       const port = urlObj.port || (isHttps ? 443 : 80);
       const mod = isHttps ? httpsMod : httpMod;
       const agent = isHttps ? new httpsMod.Agent({ rejectUnauthorized: false }) : undefined;
 
-      const options: Record<string, any> = {
+      const opts: RequestOptions = {
         hostname: urlObj.hostname,
         port: parseInt(port.toString(), 10),
         path: urlObj.pathname + urlObj.search,
-        method,
+        method: method as RequestOptions['method'],
         headers: { 'User-Agent': 'Obsidian WebDAV Sync Plugin/1.0', ...headers },
       };
-      if (isHttps) { options.agent = agent; options.rejectUnauthorized = false; }
+      if (isHttps) { (opts as RequestOptions).agent = agent; (opts as RequestOptions).rejectUnauthorized = false; }
 
-      const req = mod.request(options, (res: any) => {
+      const req = mod.request(opts, (res: IncomingMessage) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => {
           const data = Buffer.concat(chunks);
           let text = '';
           try { text = data.toString('utf-8'); } catch { /* binary data */ }
-          resolve({ status: res.statusCode || 500, headers: res.headers || {}, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
+          resolve({ status: res.statusCode || 500, headers: (res.headers || {}) as Record<string, string>, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
         });
       });
-      req.on('error', (err: any) => {
-        if (err.code === 'EPIPE' || err.message?.includes('socket hang up')) {
+      req.on('error', (err: Error) => {
+        const nodeErr = err as NodeJS.ErrnoException;
+        if (nodeErr.code === 'EPIPE' || err.message?.includes('socket hang up')) {
           const bodySize = body ? ` (body size: ${body.byteLength} bytes)` : '';
           reject(new Error(`Connection closed by server during request${bodySize} — EPIPE/socket hang up. The server may have a request size limit or does not support the requested operation.`));
         } else {
@@ -169,7 +172,7 @@ export class WebDAVSync {
       req.end();
     });
   }
-  /* eslint-enable */
+  /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, n/no-unsupported-features/node-builtins -- Node.js builtins needed for self-signed cert support */
 
   async testConnection(): Promise<void> {
     const response = await this.makeRequest('PROPFIND', this.url, { Depth: '0', Authorization: this.getAuthHeader() });
@@ -566,7 +569,7 @@ export class WebDAVSync {
   }
 }
 
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access -- process.env cast needed for env var mutation */
 let envTlsRejectSet = false;
 function setEnvTlsReject(state: boolean): void {
   if (state && !envTlsRejectSet) {
@@ -577,5 +580,5 @@ function setEnvTlsReject(state: boolean): void {
     envTlsRejectSet = false;
   }
 }
-/* eslint-enable */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access -- process.env cast needed for env var mutation */
 
