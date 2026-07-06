@@ -27,6 +27,10 @@ const EMPTY_MANIFEST: SyncManifest = {
   version: 2, lastSyncTime: 0, segmentCache: {}, files: {}, dirs: {},
 };
 
+const MAX_ENCODED_SEGMENT_LENGTH = 200;
+const MAX_FILENAME_BYTES = 100;
+const REMOTE_MANIFEST_PATH = '__manifest__.json.enc';
+
 function base64url(data: Uint8Array): string {
   let bin = '';
   for (let i = 0; i < data.length; i++) bin += String.fromCharCode(data[i]);
@@ -60,6 +64,8 @@ export default class ObsyncPlugin extends Plugin {
   private plainToEnc: Map<string, string> = new Map();
   private journal = new JournalManager();
   private statusBar: HTMLElement;
+  private pushCurrent = 0;
+  private pushTotal = 0;
 
   async onload(): Promise<void> {
     await this.detectPluginDir();
@@ -167,6 +173,13 @@ export default class ObsyncPlugin extends Plugin {
     if (this.statusBar) this.statusBar.setText(text);
   }
 
+  private makeUploadProgressCb(fileName: string) {
+    const plugin = this;
+    return function(p: { fileName: string; chunk: number; totalChunks: number }) {
+      plugin.setStatus(`Uploading ${p.fileName} (${p.chunk}/${p.totalChunks} · file ${plugin.pushCurrent}/${plugin.pushTotal})`);
+    };
+  }
+
   async loadSettings(): Promise<void> {
     const data = (await this.loadData()) || {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
@@ -234,7 +247,12 @@ export default class ObsyncPlugin extends Plugin {
     const cached = this.plainToEnc.get(plain);
     if (cached) return cached;
     const combined = await this.cryptoManager.encryptPathSegment(plain);
-    const seg = base64url(combined);
+    let seg = base64url(combined);
+    if (seg.length > MAX_ENCODED_SEGMENT_LENGTH) {
+      const hash = await crypto.subtle.digest('SHA-256', combined);
+      const hex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+      seg = hex.substring(0, 40);
+    }
     this.encToPlain.set(seg, plain);
     this.plainToEnc.set(plain, seg);
     return seg;
@@ -243,6 +261,9 @@ export default class ObsyncPlugin extends Plugin {
   private async decryptPathSegment(enc: string): Promise<string> {
     const cached = this.encToPlain.get(enc);
     if (cached) return cached;
+    if (/^[0-9a-f]{40}$/.test(enc)) {
+      throw new Error(`Cannot decrypt short path segment "${enc}" — segment cache not available. Try re-syncing from a device with the full cache.`);
+    }
     const combined = base64urlDecode(enc);
     const plain = await this.cryptoManager.decryptPathSegment(combined);
     this.encToPlain.set(enc, plain);
@@ -363,6 +384,62 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
+  private async ensureLocalFilenames(): Promise<void> {
+    const allFiles = this.app.vault.getFiles();
+    for (const file of allFiles) {
+      if (this.isExcluded(file.path)) continue;
+      const nameBytes = new TextEncoder().encode(file.name).length;
+      if (nameBytes <= MAX_FILENAME_BYTES) continue;
+      const extIdx = file.name.lastIndexOf('.');
+      const ext = extIdx >= 0 ? file.name.substring(extIdx) : '';
+      const base = extIdx >= 0 ? file.name.substring(0, extIdx) : file.name;
+      let truncated = '';
+      for (const ch of base) {
+        const next = truncated + ch;
+        if (new TextEncoder().encode(next + ext).length > MAX_FILENAME_BYTES) break;
+        truncated = next;
+      }
+      const newName = truncated + ext;
+      if (newName === file.name) continue;
+      const newPath = file.parent ? `${file.parent.path}/${newName}` : newName;
+      try {
+        await this.app.vault.rename(file, newPath);
+        console.log(`Renamed "${file.path}" → "${newPath}"`);
+      } catch (e) {
+        console.error(`Failed to rename ${file.path}:`, e);
+      }
+    }
+  }
+
+  private async uploadManifestToRemote(): Promise<void> {
+    try {
+      this.syncManifest.lastSyncTime = Date.now();
+      this.syncManifest.segmentCache = {};
+      for (const [enc, plain] of this.encToPlain) {
+        this.syncManifest.segmentCache[enc] = plain;
+      }
+      const json = JSON.stringify(this.syncManifest);
+      const enc = await this.cryptoManager.encryptBytes(new TextEncoder().encode(json));
+      await this.syncClient.uploadFile(REMOTE_MANIFEST_PATH, enc);
+    } catch (e) {
+      console.warn('Failed to upload manifest to remote:', e);
+    }
+  }
+
+  private async downloadManifestFromRemote(): Promise<SyncManifest | null> {
+    try {
+      const { data: enc } = await this.syncClient.downloadFile(REMOTE_MANIFEST_PATH);
+      const dec = await this.cryptoManager.decryptBytes(enc);
+      const json = new TextDecoder().decode(dec);
+      const m = JSON.parse(json);
+      if (!m.segmentCache) m.segmentCache = {};
+      return m;
+    } catch (e) {
+      console.warn('Failed to download manifest from remote:', e);
+      return null;
+    }
+  }
+
   async syncToWebDAV(): Promise<void> {
     if (this.isSyncing) return;
     if (!this.cryptoManager.isReady()) {
@@ -381,6 +458,9 @@ export default class ObsyncPlugin extends Plugin {
       );
 
       await this.syncClient.testConnection();
+
+      this.setStatus('Checking filenames...');
+      await this.ensureLocalFilenames();
 
       await this.loadManifest();
       this.buildSegmentMaps();
@@ -417,6 +497,10 @@ export default class ObsyncPlugin extends Plugin {
       const journalCompleted = new Set<string>();
       const journalDeletedDirs = this.journal.getDeletedDirs();
       const journalDeletedFiles = this.journal.getDeletedFiles();
+
+      const uploadEntries = journalEntries.filter(e => e.type === 'file_updated' && this.app.vault.getAbstractFileByPath(e.vaultPath) instanceof TFile);
+      this.pushTotal += uploadEntries.length;
+      this.pushCurrent = 0;
 
       for (const entry of journalEntries) {
         if (entry.type === 'file_deleted') {
@@ -479,7 +563,9 @@ export default class ObsyncPlugin extends Plugin {
             const parentDir = remotePath.contains('/') ? remotePath.substring(0, remotePath.lastIndexOf('/')) : '';
             if (parentDir) await this.syncClient.ensureDirectory(parentDir);
             const encrypted = await this.cryptoManager.encryptBytes(content);
-            let etag = await this.syncClient.uploadFile(remotePath, encrypted, syncEntry?.etag);
+            const shortName = entry.vaultPath.split('/').pop() || entry.vaultPath;
+            this.pushCurrent++;
+            let etag = await this.syncClient.uploadFile(remotePath, encrypted, syncEntry?.etag, this.makeUploadProgressCb(shortName));
 
             if (etag === null) {
               const { data: remoteEnc } = await this.syncClient.downloadFile(remotePath);
@@ -491,7 +577,7 @@ export default class ObsyncPlugin extends Plugin {
                 new Notice(`Conflict: remote ${entry.vaultPath} saved as ${cp}`);
                 conflicts++;
               }
-              etag = await this.syncClient.uploadFile(remotePath, encrypted);
+              etag = await this.syncClient.uploadFile(remotePath, encrypted, undefined, this.makeUploadProgressCb(shortName));
             }
 
             this.syncManifest.files[entry.vaultPath] = {
@@ -642,6 +728,7 @@ export default class ObsyncPlugin extends Plugin {
         if (!this.isExcluded(f.path)) localFiles.set(f.path, f);
       }
 
+      const newFiles: TFile[] = [];
       for (const [vaultPath, file] of localFiles) {
         if (this.syncManifest.files[vaultPath]) continue;
         if (journalDeletedFiles.has(vaultPath)) continue;
@@ -650,7 +737,12 @@ export default class ObsyncPlugin extends Plugin {
           if (e.type === 'file_updated' && e.vaultPath === vaultPath) { hasPendingUpdate = true; break; }
         }
         if (hasPendingUpdate) continue;
+        newFiles.push(file);
+      }
+      this.pushTotal += newFiles.length;
 
+      for (const file of newFiles) {
+        const vaultPath = file.path;
         const content = new Uint8Array(await this.app.vault.readBinary(file));
         const contentSha = await this.computeContentSha256(content);
         const remotePath = await this.vaultPathToRemote(vaultPath);
@@ -658,7 +750,9 @@ export default class ObsyncPlugin extends Plugin {
         if (parentDir) await this.syncClient.ensureDirectory(parentDir);
 
         const encrypted = await this.cryptoManager.encryptBytes(content);
-        const etag = await this.syncClient.uploadFile(remotePath, encrypted);
+        this.pushCurrent++;
+        const shortName = vaultPath.split('/').pop() || vaultPath;
+        const etag = await this.syncClient.uploadFile(remotePath, encrypted, undefined, this.makeUploadProgressCb(shortName));
         this.syncManifest.files[vaultPath] = { remotePath, etag: etag || '', localMtime: file.stat.mtime, localSha256: contentSha };
         pushed++;
       }
@@ -688,6 +782,7 @@ export default class ObsyncPlugin extends Plugin {
       this.journal.clearCompleted(journalCompleted);
 
       await this.saveManifest();
+      await this.uploadManifestToRemote();
       await this.saveSettings();
 
       const parts: string[] = [];
@@ -704,6 +799,8 @@ export default class ObsyncPlugin extends Plugin {
       this.setStatus('Sync failed');
     } finally {
       this.isSyncing = false;
+      this.pushTotal = 0;
+      this.pushCurrent = 0;
       setTimeout(() => { if (!this.isSyncing) this.setStatus(''); }, 8000);
     }
   }
@@ -726,6 +823,14 @@ export default class ObsyncPlugin extends Plugin {
 
       new Notice('Restoring...');
       await this.loadManifest();
+      const remoteManifest = await this.downloadManifestFromRemote();
+      if (remoteManifest && remoteManifest.segmentCache) {
+        for (const [enc, plain] of Object.entries(remoteManifest.segmentCache)) {
+          if (!this.syncManifest.segmentCache[enc]) {
+            this.syncManifest.segmentCache[enc] = plain;
+          }
+        }
+      }
       this.buildSegmentMaps();
 
       const tree = await this.syncClient.listTree('');

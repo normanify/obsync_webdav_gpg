@@ -18,6 +18,12 @@ export interface DownloadResult {
   etag: string | null;
 }
 
+export interface UploadProgress {
+  fileName: string;
+  chunk: number;
+  totalChunks: number;
+}
+
 export class WebDAVSync {
   private url: string;
   private username: string;
@@ -189,11 +195,11 @@ export class WebDAVSync {
     return this.parsePropfindMultistatus(response.text);
   }
 
-  async uploadFile(path: string, data: Uint8Array, ifMatch?: string): Promise<string | null> {
+  async uploadFile(path: string, data: Uint8Array, ifMatch?: string, onProgress?: (p: UploadProgress) => void): Promise<string | null> {
     const chunkSizeBytes = this.chunkSizeMb * 1024 * 1024;
 
     if (data.length > chunkSizeBytes) {
-      return await this.chunkedUpload(path, data, ifMatch);
+      return await this.chunkedUpload(path, data, ifMatch, onProgress);
     }
 
     const headers: Record<string, string> = {
@@ -207,7 +213,7 @@ export class WebDAVSync {
     return response.headers['etag'] || null;
   }
 
-  private async chunkedUpload(remotePath: string, data: Uint8Array, ifMatch?: string): Promise<string | null> {
+  private async chunkedUpload(remotePath: string, data: Uint8Array, ifMatch?: string, onProgress?: (p: UploadProgress) => void): Promise<string | null> {
     const chunkSizeBytes = this.chunkSizeMb * 1024 * 1024;
     const uploadId = this.generateUploadId();
     const uploadBaseUrl = this.getUploadsBaseUrl();
@@ -218,6 +224,7 @@ export class WebDAVSync {
     const timeout = Math.max(300000, chunkSizeBytes / 10000); // 5min min, scales with chunk size
 
     const totalChunks = Math.ceil(data.length / chunkSizeBytes);
+    const shortName = remotePath.split('/').pop() || remotePath;
 
     try {
       await this.makeRequest('MKCOL', uploadDirUrl, { Authorization: auth });
@@ -226,6 +233,8 @@ export class WebDAVSync {
     }
 
     for (let i = 0; i < totalChunks; i++) {
+      if (onProgress) onProgress({ fileName: shortName, chunk: i + 1, totalChunks });
+
       const start = i * chunkSizeBytes;
       const end = Math.min(start + chunkSizeBytes, data.length);
       const chunk = data.slice(start, end);
@@ -239,7 +248,6 @@ export class WebDAVSync {
       }, this.uint8ArrayToBuffer(chunk), timeout);
     }
 
-    const destHeader = this.getOriginUrl() + '/' + remotePath.startsWith('/') ? remotePath : '/' + remotePath;
     const assembleUrl = `${uploadDirUrl}.file`;
 
     const moveRes = await this.makeRequest('MOVE', assembleUrl, {

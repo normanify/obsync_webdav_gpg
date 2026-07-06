@@ -1,4 +1,5 @@
 node_modules/
+*.zip
 main.js
 main.js.map
 *.hot
