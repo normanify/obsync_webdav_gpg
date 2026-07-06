@@ -652,7 +652,6 @@ export default class ObsyncPlugin extends Plugin {
 
       /* ── PULL (Remote → Local) ── */
       for (const [remotePath, remoteEtag] of remoteFiles) {
-        this.log(`[pull] ${remotePath}`);
         let vaultPath = remotePathToVault.get(remotePath);
         let wasNewPath = false;
 
@@ -661,6 +660,7 @@ export default class ObsyncPlugin extends Plugin {
           if (!vaultPath) continue;
           wasNewPath = true;
         }
+        this.log(`[pull] ${vaultPath}`);
         const shortName = vaultPath.split('/').pop();
         this.setStatus(`Pulling: ${shortName}`);
         await this.yieldToUI();

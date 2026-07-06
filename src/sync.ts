@@ -244,15 +244,16 @@ export class WebDAVSync {
     };
     if (ifMatch !== undefined) headers['If-Match'] = ifMatch;
     const timeout = Math.max(300000, chunkSizeBytes / 10000);
-    console.log(`[uploadFile] PUT ${path} (${dataSizeMb}MB, timeout=${timeout}ms)`);
+    const logName = displayName || path;
+    console.log(`[uploadFile] PUT ${logName} (${dataSizeMb}MB, timeout=${timeout}ms)`);
     await new Promise(r => setTimeout(r, 5));
     let response: RequestResult;
     try {
       response = await this.makeRequest('PUT', this.getFullUrl(path), headers, this.uint8ArrayToBuffer(data), timeout);
-      console.log(`[uploadFile] PUT ${path} status: ${response.status}`);
+      console.log(`[uploadFile] PUT ${logName} status: ${response.status}`);
     } catch (e) {
-      const msg = `Upload failed for ${path}: ${e.message}`;
-      console.error(`[uploadFile] PUT ${path} threw: ${e.message}`);
+      const msg = `Upload failed for ${logName}: ${e.message}`;
+      console.error(`[uploadFile] PUT ${logName} threw: ${e.message}`);
       if (e.message?.includes('EPIPE') || e.message?.includes('socket hang up')) {
         throw new Error(`${msg}\n\nThe server closed the connection during upload. This usually means the file is too large for a single PUT request or the server does not support Nextcloud's chunked upload protocol (OC-Chunked).\nOptions:\n1. Ensure your WebDAV URL is a Nextcloud instance\n2. Try reducing the chunk size in Advanced settings\n3. If not using Nextcloud, consider a server that supports larger uploads`);
       }
@@ -276,8 +277,9 @@ export class WebDAVSync {
     const totalChunks = Math.ceil(data.length / chunkSizeBytes);
     const shortName = displayName || remotePath.split('/').pop() || remotePath;
 
+    const logName = displayName || remotePath;
     const fileSizeMb = (data.length / (1024 * 1024)).toFixed(1);
-    console.log(`[chunkedUpload] Starting. remotePath=${remotePath}, size=${fileSizeMb}MB, totalChunks=${totalChunks}, chunkSize=${this.chunkSizeMb}MB`);
+    console.log(`[chunkedUpload] Starting. file=${logName}, size=${fileSizeMb}MB, totalChunks=${totalChunks}, chunkSize=${this.chunkSizeMb}MB`);
     console.log(`[chunkedUpload] Uploads endpoint URL: ${uploadBaseUrl}`);
     console.log(`[chunkedUpload] Upload dir URL: ${uploadDirUrl}`);
     console.log(`[chunkedUpload] Target URL: ${targetUrl}`);
@@ -319,11 +321,11 @@ export class WebDAVSync {
         console.log(`[chunkedUpload] Chunk ${i + 1} PUT status: ${putRes.status}`);
       } catch (e) {
         console.log(`[chunkedUpload] Chunk ${i + 1} PUT threw: ${e.message}`);
-        throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${remotePath} — ${e.message}`);
+        throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${logName} — ${e.message}`);
       }
 
       if (putRes.status >= 400) {
-        throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${remotePath} (HTTP ${putRes.status})`);
+        throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${logName} (HTTP ${putRes.status})`);
       }
     }
 
@@ -340,14 +342,14 @@ export class WebDAVSync {
       console.log(`[chunkedUpload] MOVE status: ${moveRes.status}`);
     } catch (e) {
       console.log(`[chunkedUpload] MOVE threw: ${e.message}`);
-      throw new Error(`Chunked upload assembly failed for ${remotePath} — ${e.message}`);
+      throw new Error(`Chunked upload assembly failed for ${logName} — ${e.message}`);
     }
 
     if (moveRes.status >= 400) {
-      throw new Error(`Chunked upload assembly failed for ${remotePath} (HTTP ${moveRes.status})`);
+      throw new Error(`Chunked upload assembly failed for ${logName} (HTTP ${moveRes.status})`);
     }
 
-    console.log(`[chunkedUpload] Successfully uploaded ${remotePath}`);
+    console.log(`[chunkedUpload] Successfully uploaded ${logName}`);
 
     // Fetch etag of assembled file
     try {
