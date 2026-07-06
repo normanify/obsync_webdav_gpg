@@ -14,6 +14,7 @@ export interface ObsyncSettings {
   autoSyncOnSave: boolean;
   chunkSizeMb: number;
   verboseLog: boolean;
+  onDemand: boolean;
 }
 
 export const DEFAULT_SETTINGS: ObsyncSettings = {
@@ -29,6 +30,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   autoSyncOnSave: false,
   chunkSizeMb: 90,
   verboseLog: false,
+  onDemand: false,
 };
 
 export class ObsyncSettingTab extends PluginSettingTab {
@@ -247,6 +249,16 @@ export class ObsyncSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.verboseLog)
         .onChange(async value => {
           this.plugin.settings.verboseLog = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Download on Demand')
+      .setDesc('Only download file names during sync; actual file content is downloaded when you open a file. Useful for large vaults or slow connections.')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.onDemand)
+        .onChange(async value => {
+          this.plugin.settings.onDemand = value;
           await this.plugin.saveSettings();
         }));
 

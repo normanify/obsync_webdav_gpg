@@ -120,6 +120,13 @@ export default class ObsyncPlugin extends Plugin {
       }
     }));
 
+    this.registerEvent(this.app.workspace.on('file-open', (file) => {
+      if (!this.settings.onDemand || !file) return;
+      if (file.stat.size === 0 && this.syncManifest.files[file.path]) {
+        void this.hydrateFile(file.path);
+      }
+    }));
+
     this.settingsTab = new ObsyncSettingTab(this.app, this);
     this.addSettingTab(this.settingsTab);
 
@@ -139,6 +146,16 @@ export default class ObsyncPlugin extends Plugin {
       id: 'restore-from-webdav',
       name: 'Restore Encrypted from WebDAV',
       callback: () => this.restoreFromWebDAV(),
+    });
+
+    this.addCommand({
+      id: 'hydrate-current-file',
+      name: 'Download Current File (On-Demand)',
+      callback: () => {
+        const file = this.app.workspace.getActiveFile();
+        if (file) void this.hydrateFile(file.path);
+        else new Notice('No active file');
+      },
     });
 
     this.addRibbonIcon('upload-cloud', 'Sync encrypted vault to WebDAV', () => {
@@ -466,6 +483,35 @@ export default class ObsyncPlugin extends Plugin {
     } catch { /* stat failed, skip sha cache */ }
   }
 
+  async hydrateFile(vaultPath: string): Promise<void> {
+    const syncEntry = this.syncManifest.files[vaultPath];
+    if (!syncEntry) {
+      new Notice('File not found in sync manifest');
+      return;
+    }
+    try {
+      this.setStatus(`Downloading ${vaultPath.split('/').pop()}...`);
+      const { data: encData, etag } = await this.syncClient.downloadFile(syncEntry.remotePath);
+      const decrypted = await this.cryptoManager.decryptBytes(encData);
+      await this.writeFileToVault(vaultPath, decrypted);
+      const sha256 = await this.computeContentSha256(decrypted);
+      await this.cacheShaForFile(vaultPath, sha256);
+      const mtime = (await this.app.vault.adapter.stat(vaultPath))?.mtime || Date.now();
+      syncEntry.localSha256 = sha256;
+      syncEntry.localMtime = mtime;
+      if (etag) syncEntry.etag = etag;
+      await this.saveManifest();
+      const leaf = this.app.workspace.getLeaf(false);
+      if (leaf) {
+        const file = this.app.vault.getAbstractFileByPath(vaultPath);
+        if (file instanceof TFile) await leaf.openFile(file);
+      }
+      new Notice(`Downloaded: ${vaultPath.split('/').pop()}`);
+    } catch (e) {
+      new Notice(`Failed to download ${vaultPath}: ${e.message}`);
+    }
+  }
+
   private async ensureLocalFilenames(): Promise<void> {
     const allFiles = this.app.vault.getFiles();
     const usedNames = new Set(allFiles.map(f => f.path));
@@ -577,7 +623,7 @@ export default class ObsyncPlugin extends Plugin {
         remotePathToVault.set(entry.remotePath, vp);
       }
 
-      let pulled = 0, localDel = 0, pushed = 0, remoteDel = 0, conflicts = 0;
+      let pulled = 0, localDel = 0, pushed = 0, remoteDel = 0, conflicts = 0, onDemandPlaceholders = 0;
 
       /* ── PROCESS JOURNAL (Local changes → Remote) ── */
       this.setStatus('Processing journal...');
@@ -767,6 +813,14 @@ export default class ObsyncPlugin extends Plugin {
         }
 
         this.log(`[pull] downloading ${vaultPath} — wasNewPath=${wasNewPath} hasEntry=${!!syncEntry}${syncEntry ? ` etagMatch=${syncEntry.etag === remoteEtag} (local=${syncEntry.etag}, remote=${remoteEtag})` : ''}`);
+
+        if (this.settings.onDemand) {
+          await this.writeFileToVault(vaultPath, new Uint8Array(0));
+          this.syncManifest.files[vaultPath] = { remotePath, etag: remoteEtag, localMtime: Date.now(), localSha256: '' };
+          this.log(`[pull] on-demand placeholder ${vaultPath}`);
+          onDemandPlaceholders++;
+          continue;
+        }
 
         try {
           const { data: encData, etag: newEtagSrc } = await this.syncClient.downloadFile(
@@ -1042,6 +1096,12 @@ export default class ObsyncPlugin extends Plugin {
         if (!vaultPath || this.isExcluded(vaultPath)) { skipped++; continue; }
 
         try {
+          if (this.settings.onDemand) {
+            await this.writeFileToVault(vaultPath, new Uint8Array(0));
+            this.syncManifest.files[vaultPath] = { remotePath: entry.href, etag: entry.etag || '', localMtime: Date.now(), localSha256: '' };
+            restored++;
+            continue;
+          }
           const shortName = vaultPath.split('/').pop();
           const { data: encData, etag } = await this.syncClient.downloadFile(
             entry.href,
