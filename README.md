@@ -54,6 +54,17 @@ Works with any standard WebDAV service:
 
 Supports self-signed certificates (enable in settings).
 
+> **🌐 Cloudflare Proxy Compatible** — Uploads and downloads use **chunked transfer** with automatic 100MB file splitting. This avoids Cloudflare's 100MB upload limit and works reliably behind Cloudflare proxies, CDNs, and other reverse proxies that restrict request sizes. Both upload and download are fully chunked.
+
+### 🔁 Chunked Transfer
+
+Files **over 90MB** (configurable in Advanced settings) are automatically split into chunks for both **upload** and **download**:
+
+- **Upload**: Uses the Nextcloud OC-Chunked protocol — chunks are uploaded individually, then assembled server-side
+- **Download**: Uses HTTP `Range` requests — chunks are fetched **in parallel** (10MB per chunk) with per-chunk timeout (60s) and automatic retry (3 attempts)
+- **Status bar** shows real-time chunk progress: `Uploading notes.md (3/12 · file 5/18)`
+- Files under 5MB download as a single request for maximum speed
+
 ### 🚀 Quick Start
 
 1. Install the plugin
