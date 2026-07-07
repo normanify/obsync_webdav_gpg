@@ -1176,6 +1176,30 @@ export default class ObsyncPlugin extends Plugin {
 
       this.journal.clearCompleted(journalCompleted);
 
+      /* Post-sync: when on‑demand is off, fill any 0‑byte placeholders left behind */
+      if (!this.settings.onDemand) {
+        for (const [vp, entry] of Object.entries(this.syncManifest.files)) {
+          const f = this.app.vault.getAbstractFileByPath(vp);
+          if (!(f instanceof TFile) || f.stat.size !== 0) continue;
+          this.log(`[placeholder] filling ${vp}`);
+          this.setStatus(`Filling placeholder: ${vp.split('/').pop()}`);
+          try {
+            const { data: encData } = await this.syncClient.downloadFile(entry.remotePath);
+            const decrypted = await this.cryptoManager.decryptBytes(encData);
+            await this.writeFileToVault(vp, decrypted);
+            const sha256 = await this.computeContentSha256(decrypted);
+            await this.cacheShaForFile(vp, sha256);
+            const mtime = (await this.app.vault.adapter.stat(vp))?.mtime || Date.now();
+            entry.localSha256 = sha256;
+            entry.localMtime = mtime;
+            pulled++;
+          } catch (e) {
+            console.error(`Failed to fill placeholder ${vp}:`, e);
+          }
+          await this.yieldToUI();
+        }
+      }
+
       await this.saveManifest();
       await this.saveShaCache();
       await this.uploadManifestToRemote();
