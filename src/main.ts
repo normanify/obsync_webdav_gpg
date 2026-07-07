@@ -63,7 +63,7 @@ interface ElectronShell {
 }
 
 // Centralized typed wrapper for require('electron') — all eslint suppressions in one place
-// eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+// eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- require('electron') is the only way to access Electron APIs in Obsidian plugins; the typed wrapper centralises all suppressions here
 const _electronModule: { shell: ElectronShell } | undefined = (() => { try { return require('electron') as { shell: ElectronShell }; } catch { return undefined; } })();
 
 function openFileWithDefaultApp(fullPath: string): void {
@@ -175,7 +175,7 @@ export default class ObsyncPlugin extends Plugin {
           // Open with default system app
           leaf.detach();
           try {
-            const shellPath = String(this.app.vault.adapter.getFullPath(file.path));
+            const shellPath = String(this.app.vault.adapter.getFullPath(file.path)); // eslint-disable-line @typescript-eslint/no-unsafe-call
             openFileWithDefaultApp(shellPath);
           } catch (e) {
             console.error('[on-demand] openWithDefaultApp failed:', e);
@@ -206,7 +206,7 @@ export default class ObsyncPlugin extends Plugin {
                 if (leaf) leaf.openFile(file).catch(e => console.error('[on-demand] openFile failed:', e));
               } else {
                 try {
-                  openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path)));
+                  openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path))); // eslint-disable-line @typescript-eslint/no-unsafe-call
                 } catch { /* ignore */ }
               }
               new Notice(`Downloaded: ${file.name}`);
@@ -601,7 +601,7 @@ export default class ObsyncPlugin extends Plugin {
       this._origShellOpenPath = _electronModule.shell.openPath.bind(_electronModule.shell);
       _electronModule.shell.openPath = async (filePath: string): Promise<string> => {
         if (this.settings.onDemand) {
-          const vaultBase = String(this.app.vault.adapter.getFullPath('/'));
+          const vaultBase = String(this.app.vault.adapter.getFullPath('/')); // eslint-disable-line @typescript-eslint/no-unsafe-call
           const relPath = filePath.startsWith(vaultBase)
             ? filePath.slice(vaultBase.length).replace(/^\//, '')
             : null;
