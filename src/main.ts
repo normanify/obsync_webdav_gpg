@@ -85,7 +85,7 @@ export default class ObsyncPlugin extends Plugin {
   private _handlingFileOpen = new Set<string>();
 
   async onload(): Promise<void> {
-    await this.detectPluginDir();
+    this.detectPluginDir();
     await this.loadSettings();
     await this.loadManifest();
 
@@ -312,17 +312,8 @@ export default class ObsyncPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  private async detectPluginDir(): Promise<void> {
-    const idDir = `.obsidian/plugins/${this.manifest.id}`;
-    const altDir = `.obsidian/plugins/${this.manifest.id.replace(/-/g, '_')}`;
-    if (idDir !== altDir) {
-      try {
-        const raw = await this.app.vault.adapter.read(`${altDir}/manifest.json`);
-        const m = JSON.parse(raw) as { id: string };
-        if (m.id === this.manifest.id) { this.pluginDir = altDir; return; }
-      } catch { /* alt dir doesn't exist */ }
-    }
-    this.pluginDir = idDir;
+  private detectPluginDir(): void {
+    this.pluginDir = `.obsidian/plugins/${this.manifest.id}`;
   }
 
   private get cacheDir(): string {
