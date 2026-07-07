@@ -54,6 +54,22 @@ function normalizePath(p: string): string {
   try { return p.normalize('NFC'); } catch { return p; }
 }
 
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+interface ElectronShell {
+  openPath: (path: string) => Promise<string>;
+}
+
+// Centralized typed wrapper for require('electron') — all eslint suppressions in one place
+// eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+const _electronModule: { shell: ElectronShell } | undefined = (() => { try { return require('electron') as { shell: ElectronShell }; } catch { return undefined; } })();
+
+function openFileWithDefaultApp(fullPath: string): void {
+  void _electronModule?.shell.openPath(fullPath);
+}
+
 function sanitizeVaultPath(vaultPath: string): string {
   vaultPath = normalizePath(vaultPath);
   return vaultPath.split('/').map(seg => {
@@ -150,7 +166,7 @@ export default class ObsyncPlugin extends Plugin {
       new Notice(`Downloading ${file.name}...`);
       void this.ensureOnDemandHydrated(fp).then(() => {
         const leaf = this.app.workspace.getLeaf(false);
-        if (!leaf || normalizePath(leaf.view?.file?.path ?? '') !== fp) return;
+        if (!leaf || normalizePath((leaf.view as { file?: { path?: string } } | null)?.file?.path ?? '') !== fp) return;
         const ext = file.extension?.toLowerCase() || '';
         // Files that Obsidian can render natively
         if (['md', 'canvas', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'mp3', 'ogg', 'wav', 'm4a', 'flac', 'mp4', 'webm', 'ogv', 'pdf', 'epub'].includes(ext)) {
@@ -159,10 +175,8 @@ export default class ObsyncPlugin extends Plugin {
           // Open with default system app
           leaf.detach();
           try {
-            // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
-            const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
-            const shellPath = this.app.vault.adapter.getFullPath(file.path);
-            void electron.shell.openPath(shellPath);
+            const shellPath = String(this.app.vault.adapter.getFullPath(file.path));
+            openFileWithDefaultApp(shellPath);
           } catch (e) {
             console.error('[on-demand] openWithDefaultApp failed:', e);
             new Notice('Failed to open file externally');
@@ -170,7 +184,7 @@ export default class ObsyncPlugin extends Plugin {
         }
       }).catch(e => {
         console.error('[on-demand] failed:', e);
-        new Notice(`Download failed: ${e.message}`);
+        new Notice(`Download failed: ${errorMessage(e)}`);
       });
     }));
 
@@ -192,14 +206,12 @@ export default class ObsyncPlugin extends Plugin {
                 if (leaf) leaf.openFile(file).catch(e => console.error('[on-demand] openFile failed:', e));
               } else {
                 try {
-                  // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
-                  const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
-                  void electron.shell.openPath(this.app.vault.adapter.getFullPath(file.path));
+                  openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path)));
                 } catch { /* ignore */ }
               }
               new Notice(`Downloaded: ${file.name}`);
             }).catch(e => {
-              new Notice(`Download failed: ${e.message}`);
+              new Notice(`Download failed: ${errorMessage(e)}`);
             });
           });
       });
@@ -262,9 +274,7 @@ export default class ObsyncPlugin extends Plugin {
     }
     if (this._origShellOpenPath) {
       try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
-        const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
-        if (electron?.shell) electron.shell.openPath = this._origShellOpenPath;
+        if (_electronModule?.shell) _electronModule.shell.openPath = this._origShellOpenPath;
       } catch { /* ignore */ }
       this._origShellOpenPath = null;
     }
@@ -515,7 +525,7 @@ export default class ObsyncPlugin extends Plugin {
       new Notice('GPG key pair generated successfully');
     } catch (e) {
       console.error('Key generation error:', e);
-      new Notice('Failed to generate keys: ' + e.message);
+      new Notice('Failed to generate keys: ' + errorMessage(e));
     }
   }
 
@@ -587,13 +597,11 @@ export default class ObsyncPlugin extends Plugin {
 
   private _patchShellOpenPath(): void {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
-      const electron = require('electron') as { shell: { openPath: (path: string) => Promise<string> } };
-      if (!electron?.shell?.openPath) return;
-      this._origShellOpenPath = electron.shell.openPath.bind(electron.shell);
-      electron.shell.openPath = async (filePath: string): Promise<string> => {
+      if (!_electronModule?.shell?.openPath) return;
+      this._origShellOpenPath = _electronModule.shell.openPath.bind(_electronModule.shell);
+      _electronModule.shell.openPath = async (filePath: string): Promise<string> => {
         if (this.settings.onDemand) {
-          const vaultBase = this.app.vault.adapter.getFullPath('/');
+          const vaultBase = String(this.app.vault.adapter.getFullPath('/'));
           const relPath = filePath.startsWith(vaultBase)
             ? filePath.slice(vaultBase.length).replace(/^\//, '')
             : null;
@@ -641,7 +649,7 @@ export default class ObsyncPlugin extends Plugin {
       await this.saveManifest();
     } catch (e) {
       console.error('[on-demand] hydrateFile error:', e);
-      new Notice(`Failed to download ${vaultPath}: ${e.message}`);
+      new Notice(`Failed to download ${vaultPath}: ${errorMessage(e)}`);
     }
   }
 
@@ -1205,7 +1213,7 @@ export default class ObsyncPlugin extends Plugin {
       new Notice(parts.length > 0 ? `Sync done: ${parts.join(', ')}` : 'No changes');
       this.setStatus(parts.length > 0 ? `Sync: ${parts.join(' ')}` : 'Sync: up-to-date');
     } catch (e) {
-      new Notice('Sync failed: ' + e.message);
+      new Notice('Sync failed: ' + errorMessage(e));
       console.error('Sync failed:', e);
       this.setStatus('Sync failed');
     } finally {
@@ -1296,7 +1304,7 @@ export default class ObsyncPlugin extends Plugin {
       const parts = [`restored ${restored}`, dirsCreated > 0 ? `dirs ${dirsCreated}` : '', skipped > 0 ? `skipped ${skipped}` : '', failed > 0 ? `failed ${failed}` : ''].filter(Boolean);
       new Notice(`Restore done (${parts.join(', ')})`);
     } catch (e) {
-      new Notice('Restore failed: ' + e.message);
+      new Notice('Restore failed: ' + errorMessage(e));
       console.error('Restore failed:', e);
     } finally {
       this.isSyncing = false;
@@ -1358,7 +1366,7 @@ export default class ObsyncPlugin extends Plugin {
         new Notice('Config imported successfully');
         this.settingsTab?.display();
       } catch (e) {
-        new Notice('Import failed: ' + e.message);
+        new Notice('Import failed: ' + errorMessage(e));
       }
     };
     input.click();

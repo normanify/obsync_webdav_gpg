@@ -1,5 +1,9 @@
 import { requestUrl } from 'obsidian';
 
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 interface NodeRequestOptions {
   hostname: string;
   port: number;
@@ -273,7 +277,7 @@ export class WebDAVSync {
       try {
         return await this.chunkedUpload(path, data, ifMatch, onProgress, displayName);
       } catch (e) {
-        console.warn(`[uploadFile] Chunked upload failed, falling back to regular PUT: ${e.message}`);
+        console.warn(`[uploadFile] Chunked upload failed, falling back to regular PUT: ${errorMessage(e)}`);
       }
     } else {
       console.log(`[uploadFile] File size ${fileSizeMb}MB <= chunkSize ${this.chunkSizeMb}MB, using regular PUT`);
@@ -293,10 +297,10 @@ export class WebDAVSync {
     try {
       response = await this.makeRequest('PUT', this.getFullUrl(path), headers, this.uint8ArrayToBuffer(data), timeout);
       console.log(`[uploadFile] PUT ${logName} status: ${response.status}`);
-    } catch (e) {
-      const msg = `Upload failed for ${logName}: ${e.message}`;
-      console.error(`[uploadFile] PUT ${logName} threw: ${e.message}`);
-      if (e.message?.includes('EPIPE') || e.message?.includes('socket hang up')) {
+    } catch (e: unknown) {
+      const msg = `Upload failed for ${logName}: ${errorMessage(e)}`;
+      console.error(`[uploadFile] PUT ${logName} threw: ${errorMessage(e)}`);
+      if (errorMessage(e).includes('EPIPE') || errorMessage(e).includes('socket hang up')) {
         throw new Error(`${msg}\n\nThe server closed the connection during upload. This usually means the file is too large for a single PUT request or the server does not support Nextcloud's chunked upload protocol (OC-Chunked).\nOptions:\n1. Ensure your WebDAV URL is a Nextcloud instance\n2. Try reducing the chunk size in Advanced settings\n3. If not using Nextcloud, consider a server that supports larger uploads`);
       }
       throw new Error(msg);
@@ -333,8 +337,8 @@ export class WebDAVSync {
       mkcolRes = await this.makeRequest('MKCOL', uploadDirUrl, { Authorization: auth });
       console.log(`[chunkedUpload] MKCOL status: ${mkcolRes.status}`);
     } catch (e) {
-      console.log(`[chunkedUpload] MKCOL threw: ${e.message}`);
-      throw new Error(`Chunked upload: MKCOL failed for upload directory — ${e.message}. Uploads endpoint: ${uploadBaseUrl}. Make sure the WebDAV URL is a Nextcloud instance and the user ID is correct.`);
+      console.log(`[chunkedUpload] MKCOL threw: ${errorMessage(e)}`);
+      throw new Error(`Chunked upload: MKCOL failed for upload directory — ${errorMessage(e)}. Uploads endpoint: ${uploadBaseUrl}. Make sure the WebDAV URL is a Nextcloud instance and the user ID is correct.`);
     }
     if (mkcolRes.status >= 400 && mkcolRes.status !== 405) {
       throw new Error(`Chunked upload: failed to create upload directory (HTTP ${mkcolRes.status}). Uploads endpoint: ${uploadBaseUrl}. Check that the WebDAV URL is a Nextcloud instance and the user ID is correct.`);
@@ -362,8 +366,8 @@ export class WebDAVSync {
         }, this.uint8ArrayToBuffer(chunk), timeout);
         console.log(`[chunkedUpload] Chunk ${i + 1} PUT status: ${putRes.status}`);
       } catch (e) {
-        console.log(`[chunkedUpload] Chunk ${i + 1} PUT threw: ${e.message}`);
-        throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${logName} — ${e.message}`);
+        console.log(`[chunkedUpload] Chunk ${i + 1} PUT threw: ${errorMessage(e)}`);
+        throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${logName} — ${errorMessage(e)}`);
       }
 
       if (putRes.status >= 400) {
@@ -383,8 +387,8 @@ export class WebDAVSync {
       });
       console.log(`[chunkedUpload] MOVE status: ${moveRes.status}`);
     } catch (e) {
-      console.log(`[chunkedUpload] MOVE threw: ${e.message}`);
-      throw new Error(`Chunked upload assembly failed for ${logName} — ${e.message}`);
+      console.log(`[chunkedUpload] MOVE threw: ${errorMessage(e)}`);
+      throw new Error(`Chunked upload assembly failed for ${logName} — ${errorMessage(e)}`);
     }
 
     if (moveRes.status >= 400) {

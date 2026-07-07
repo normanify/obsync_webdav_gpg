@@ -1,6 +1,10 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import ObsyncPlugin from './main';
 
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 export interface ObsyncSettings {
   webdavUrl: string;
   webdavUsername: string;
@@ -95,7 +99,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
             await this.plugin.syncClient.testConnection();
             new Notice('WebDAV connection successful');
           } catch (e) {
-            new Notice('WebDAV connection failed: ' + e.message);
+            new Notice('WebDAV connection failed: ' + errorMessage(e));
           }
         }));
 
@@ -159,7 +163,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
             await this.plugin.generateKeyPair();
             this.display();
           } catch (e) {
-            new Notice('Key generation failed: ' + e.message);
+            new Notice('Key generation failed: ' + errorMessage(e));
           }
         }));
 
@@ -210,7 +214,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
               const dec = await this.plugin.cryptoManager.decryptText(test);
               new Notice(dec === 'test' ? 'Encrypt/decrypt round-trip OK' : 'Decryption mismatch');
             } catch (e) {
-              new Notice('Decryption test failed: ' + e.message);
+              new Notice('Decryption test failed: ' + errorMessage(e));
             }
           }));
     }
