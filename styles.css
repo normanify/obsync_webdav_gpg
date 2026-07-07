@@ -2,3 +2,8 @@
   font-family: var(--font-monospace);
   font-size: 11px;
 }
+
+.obsync-restore-warning button {
+  color: var(--text-error);
+  border-color: var(--text-error);
+}

@@ -148,7 +148,7 @@ export default class ObsyncPlugin extends Plugin {
       }
       this._handlingFileOpen.add(fp);
       new Notice(`Downloading ${file.name}...`);
-      this.ensureOnDemandHydrated(fp).then(() => {
+      void this.ensureOnDemandHydrated(fp).then(() => {
         const leaf = this.app.workspace.getLeaf(false);
         if (!leaf || normalizePath(leaf.view?.file?.path ?? '') !== fp) return;
         const ext = file.extension?.toLowerCase() || '';
@@ -183,14 +183,13 @@ export default class ObsyncPlugin extends Plugin {
       menu.addItem((item) => {
         item.setTitle('Download on-demand')
           .setIcon('download')
-          .onClick(async () => {
+          .onClick(() => {
             new Notice(`Downloading ${file.name}...`);
-            try {
-              await this.ensureOnDemandHydrated(fp);
+            void this.ensureOnDemandHydrated(fp).then(() => {
               const ext = file.extension?.toLowerCase() || '';
               if (['md', 'canvas', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'mp3', 'ogg', 'wav', 'm4a', 'flac', 'mp4', 'webm', 'ogv', 'pdf', 'epub'].includes(ext)) {
                 const leaf = this.app.workspace.getLeaf(false);
-                if (leaf) await leaf.openFile(file);
+                if (leaf) leaf.openFile(file).catch(e => console.error('[on-demand] openFile failed:', e));
               } else {
                 try {
                   // eslint-disable-next-line @typescript-eslint/no-var-requires -- Electron only available via require
@@ -199,9 +198,9 @@ export default class ObsyncPlugin extends Plugin {
                 } catch { /* ignore */ }
               }
               new Notice(`Downloaded: ${file.name}`);
-            } catch (e) {
+            }).catch(e => {
               new Notice(`Download failed: ${e.message}`);
-            }
+            });
           });
       });
     }));
@@ -1061,7 +1060,7 @@ export default class ObsyncPlugin extends Plugin {
             await this.cacheShaForFile(vaultPath, currentSha);
             if (currentSha === syncEntry.localSha256) {
               try {
-                await this.app.vault.delete(localFile);
+                await this.app.vault.adapter.remove(vaultPath);
                 localDel++;
               } catch (e) {
                 console.error(`Failed to delete local ${vaultPath}:`, e);
@@ -1077,7 +1076,7 @@ export default class ObsyncPlugin extends Plugin {
         if (!remoteDirs.has(syncEntry.remotePath)) {
           const localDir = this.app.vault.getAbstractFileByPath(vaultDir);
           if (localDir instanceof TFolder) {
-            try { await this.app.vault.delete(localDir); localDel++; }
+            try { await this.app.vault.adapter.rmdir(vaultDir, true); localDel++; }
             catch (e) { console.error(`Failed to delete local dir ${vaultDir}:`, e); }
           }
           delete this.syncManifest.dirs[vaultDir];

@@ -300,9 +300,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
       .setName('Restore from WebDAV')
       .setDesc('Download and decrypt all files from WebDAV, rebuilding vault state')
       .addButton(btn => {
-        btn.setButtonText('Restore Now')
-          .onClick(() => this.plugin.restoreFromWebDAV());
-        btn.buttonEl.addClass('mod-warning');
+        btn.setButtonText('Restore Now');
+        btn.onClick(() => this.plugin.restoreFromWebDAV());
       });
+    const restoreSetting = containerEl.lastElementChild;
+    if (restoreSetting) restoreSetting.classList.add('obsync-restore-warning');
   }
 }
