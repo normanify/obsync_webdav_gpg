@@ -6,34 +6,18 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-interface NodeRequestOptions {
-  hostname: string;
-  port: number;
-  path: string;
+interface ObsRequestUrlParam {
+  url: string;
   method: string;
   headers: Record<string, string>;
-  agent?: unknown;
-  rejectUnauthorized?: boolean;
-}
-
-interface NodeIncomingMessage {
-  statusCode?: number;
-  headers: Record<string, string | string[] | undefined>;
-  on(event: 'data', cb: (chunk: Buffer) => void): void;
-  on(event: 'end', cb: () => void): void;
-}
-
-interface NodeClientRequest {
-  on(event: 'error', cb: (err: Error) => void): void;
-  setTimeout(ms: number, cb: () => void): void;
-  write(chunk: Buffer): void;
-  end(): void;
-  destroy(err: Error): void;
+  body?: ArrayBuffer;
+  throw: boolean;
+  timeout?: number;
 }
 
 interface NodeModule {
-  Agent: new (opts?: Record<string, unknown>) => unknown;
-  request(opts: NodeRequestOptions, cb: (res: NodeIncomingMessage) => void): NodeClientRequest;
+  Agent: new (opts?: Record<string, unknown>) => http.Agent;
+  request(opts: http.RequestOptions, cb: (res: http.IncomingMessage) => void): http.ClientRequest;
 }
 
 interface RequestResult {
@@ -161,7 +145,7 @@ export class WebDAVSync {
     const obsHeaders = { ...headers };
     delete obsHeaders['Content-Length'];
     delete obsHeaders['OC-Chunked'];
-    const response = await requestUrl({ url: fullUrl, method, headers: obsHeaders, body, throw: false, timeout: timeoutMs } as any);
+    const response = await requestUrl({ url: fullUrl, method, headers: obsHeaders, body, throw: false, timeout: timeoutMs } as ObsRequestUrlParam);
     const headersLower: Record<string, string> = {};
     for (const [k, v] of Object.entries(response.headers || {})) {
       headersLower[k.toLowerCase()] = v;
@@ -170,8 +154,8 @@ export class WebDAVSync {
   }
 
   private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000, rejectUnauthorized = false): Promise<RequestResult> {
-    const httpsMod = https as unknown as NodeModule;
-    const httpMod = http as unknown as NodeModule;
+    const httpsMod = https as NodeModule;
+    const httpMod = http as NodeModule;
 
     return new Promise<RequestResult>((resolve, reject) => {
       const urlObj = new URL(fullUrl);
@@ -183,23 +167,28 @@ export class WebDAVSync {
       if (body && !headers['Content-Length']) {
         headers['Content-Length'] = String(body.byteLength);
       }
-      const opts: NodeRequestOptions = {
+      const opts: http.RequestOptions = {
         hostname: urlObj.hostname,
         port: parseInt(port.toString(), 10),
         path: urlObj.pathname + urlObj.search,
         method,
         headers: { 'User-Agent': 'Obsidian WebDAV Sync Plugin/1.0', ...headers },
       };
-      if (isHttps) { opts.agent = agent; opts.rejectUnauthorized = rejectUnauthorized; }
+      if (isHttps) { opts.agent = agent; (opts as https.RequestOptions).rejectUnauthorized = rejectUnauthorized; }
 
-      const req = mod.request(opts, (res: NodeIncomingMessage) => {
+      const req = mod.request(opts, (res: http.IncomingMessage) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => {
           const data = Buffer.concat(chunks);
-          let text = '';
-          try { text = data.toString('utf-8'); } catch { /* binary data */ }
-          resolve({ status: res.statusCode || 500, headers: (res.headers || {}) as Record<string, string>, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
+          const text = (() => { try { return data.toString('utf-8'); } catch { return ''; } })();
+          const headersOut: Record<string, string> = {};
+          if (res.headers) {
+            for (const [k, v] of Object.entries(res.headers)) {
+              headersOut[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v ?? '');
+            }
+          }
+          resolve({ status: res.statusCode || 500, headers: headersOut, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
         });
       });
       req.on('error', (err: Error) => {
@@ -212,9 +201,7 @@ export class WebDAVSync {
         }
       });
       req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
-      if (body) {
-        req.write(Buffer.from(body));
-      }
+      if (body) req.write(Buffer.from(body));
       req.end();
     });
   }

@@ -68,7 +68,7 @@ interface ElectronShell {
 
 async function getElectronModule(): Promise<{ shell: ElectronShell } | undefined> {
   try {
-    return await import('electron') as { shell: ElectronShell };
+    return import('electron');
   } catch {
     return undefined;
   }
@@ -185,7 +185,7 @@ export default class ObsyncPlugin extends Plugin {
           leaf.detach();
           try {
             const shellPath = String(this.app.vault.adapter.getFullPath(file.path)); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API; needed to resolve vault base path
-            openFileWithDefaultApp(shellPath);
+            void openFileWithDefaultApp(shellPath);
           } catch (e) {
             console.error('[on-demand] openWithDefaultApp failed:', e);
             new Notice('Failed to open file externally');
@@ -215,7 +215,7 @@ export default class ObsyncPlugin extends Plugin {
                 if (leaf) leaf.openFile(file).catch(e => console.error('[on-demand] openFile failed:', e));
               } else {
                 try {
-                  openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path))); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API; needed to resolve vault base path
+                  void openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path))); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API; needed to resolve vault base path
                 } catch { /* ignore */ }
               }
               new Notice(`Downloaded: ${file.name}`);
