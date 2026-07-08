@@ -218,7 +218,6 @@ export class WebDAVSync {
       req.end();
     });
   }
-  /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, n/no-unsupported-features/node-builtins -- Node.js builtins needed for self-signed cert support */
 
   async testConnection(): Promise<void> {
     const response = await this.makeRequest('PROPFIND', this.url, { Depth: '0', Authorization: this.getAuthHeader() });
