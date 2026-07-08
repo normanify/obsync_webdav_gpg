@@ -4,6 +4,10 @@ import { WebDAVSync } from './sync';
 import { ObsyncSettings, DEFAULT_SETTINGS, ObsyncSettingTab } from './settings';
 import { JournalManager } from './journal';
 
+interface ElectronShell {
+  openPath: (path: string) => Promise<string>;
+}
+
 interface FileSyncEntry {
   remotePath: string;
   etag: string;
@@ -62,12 +66,17 @@ interface ElectronShell {
   openPath: (path: string) => Promise<string>;
 }
 
-// Centralized typed wrapper for require('electron') — all eslint suppressions in one place
-// eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- require('electron') is the only way to access Electron APIs in Obsidian plugins; the typed wrapper centralises all suppressions here
-const _electronModule: { shell: ElectronShell } | undefined = (() => { try { return require('electron') as { shell: ElectronShell }; } catch { return undefined; } })();
+async function getElectronModule(): Promise<{ shell: ElectronShell } | undefined> {
+  try {
+    return await import('electron') as { shell: ElectronShell };
+  } catch {
+    return undefined;
+  }
+}
 
-function openFileWithDefaultApp(fullPath: string): void {
-  void _electronModule?.shell.openPath(fullPath);
+async function openFileWithDefaultApp(fullPath: string): Promise<void> {
+  const mod = await getElectronModule();
+  void mod?.shell.openPath(fullPath);
 }
 
 function sanitizeVaultPath(vaultPath: string): string {
@@ -175,7 +184,7 @@ export default class ObsyncPlugin extends Plugin {
           // Open with default system app
           leaf.detach();
           try {
-            const shellPath = String(this.app.vault.adapter.getFullPath(file.path)); // eslint-disable-line @typescript-eslint/no-unsafe-call
+            const shellPath = String(this.app.vault.adapter.getFullPath(file.path)); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API; needed to resolve vault base path
             openFileWithDefaultApp(shellPath);
           } catch (e) {
             console.error('[on-demand] openWithDefaultApp failed:', e);
@@ -206,7 +215,7 @@ export default class ObsyncPlugin extends Plugin {
                 if (leaf) leaf.openFile(file).catch(e => console.error('[on-demand] openFile failed:', e));
               } else {
                 try {
-                  openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path))); // eslint-disable-line @typescript-eslint/no-unsafe-call
+                  openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path))); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API; needed to resolve vault base path
                 } catch { /* ignore */ }
               }
               new Notice(`Downloaded: ${file.name}`);
@@ -222,7 +231,7 @@ export default class ObsyncPlugin extends Plugin {
     this.app.vault.readBinary = this._interceptVaultReadBinary.bind(this);
 
     // Override Electron shell.openPath to hydrate before opening with default system app
-    this._patchShellOpenPath();
+    await this._patchShellOpenPath();
 
     this.settingsTab = new ObsyncSettingTab(this.app, this);
     this.addSettingTab(this.settingsTab);
@@ -273,9 +282,12 @@ export default class ObsyncPlugin extends Plugin {
       this._origVaultReadBinary = null;
     }
     if (this._origShellOpenPath) {
-      try {
-        if (_electronModule?.shell) _electronModule.shell.openPath = this._origShellOpenPath;
-      } catch { /* ignore */ }
+      void (async () => {
+        try {
+          const mod = await getElectronModule();
+          if (mod?.shell) mod.shell.openPath = this._origShellOpenPath!;
+        } catch { /* ignore */ }
+      })();
       this._origShellOpenPath = null;
     }
     void this.journal?.save();
@@ -308,8 +320,10 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   private makeUploadProgressCb(fileName: string) {
-    return (p: { fileName: string; chunk: number; totalChunks: number }) => {
-      this.setStatus(`Uploading ${p.fileName} (${p.chunk}/${p.totalChunks} · file ${this.pushCurrent}/${this.pushTotal})`);
+    return (p: { fileName: string; chunk: number; totalChunks: number; speed: string; pct: string }) => {
+      const speedPart = p.speed ? ` · ${p.speed}` : '';
+      const pctPart = p.pct ? ` ${p.pct}%` : '';
+      this.setStatus(`Uploading ${p.fileName}${pctPart} (${p.chunk}/${p.totalChunks}${speedPart} · file ${this.pushCurrent}/${this.pushTotal})`);
     };
   }
 
@@ -595,13 +609,14 @@ export default class ObsyncPlugin extends Plugin {
     }
   }
 
-  private _patchShellOpenPath(): void {
+  private async _patchShellOpenPath(): Promise<void> {
     try {
-      if (!_electronModule?.shell?.openPath) return;
-      this._origShellOpenPath = _electronModule.shell.openPath.bind(_electronModule.shell);
-      _electronModule.shell.openPath = async (filePath: string): Promise<string> => {
+      const mod = await getElectronModule();
+      if (!mod?.shell?.openPath) return;
+      this._origShellOpenPath = mod.shell.openPath.bind(mod.shell);
+      mod.shell.openPath = async (filePath: string): Promise<string> => {
         if (this.settings.onDemand) {
-          const vaultBase = String(this.app.vault.adapter.getFullPath('/')); // eslint-disable-line @typescript-eslint/no-unsafe-call
+          const vaultBase = String(this.app.vault.adapter.getFullPath('/')); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API; needed to resolve vault base path
           const relPath = filePath.startsWith(vaultBase)
             ? filePath.slice(vaultBase.length).replace(/^\//, '')
             : null;
@@ -971,7 +986,7 @@ export default class ObsyncPlugin extends Plugin {
         try {
           const { data: encData, etag: newEtagSrc } = await this.syncClient.downloadFile(
             remotePath,
-            (p) => this.setStatus(`Pulling: ${shortName} (chunk ${p.chunk}/${p.totalChunks})`)
+            (p) => this.setStatus(`Pulling: ${shortName} (${p.pct}% · ${p.speed} · chunk ${p.chunk}/${p.totalChunks})`)
           );
           let newEtag = newEtagSrc;
           await this.yieldToUI();
@@ -1283,7 +1298,7 @@ export default class ObsyncPlugin extends Plugin {
           const shortName = vaultPath.split('/').pop();
           const { data: encData, etag } = await this.syncClient.downloadFile(
             entry.href,
-            (p) => this.setStatus(`Syncing: ${shortName} (chunk ${p.chunk}/${p.totalChunks})`)
+            (p) => this.setStatus(`Syncing: ${shortName} (${p.pct}% · ${p.speed} · chunk ${p.chunk}/${p.totalChunks})`)
           );
           const decrypted = await this.cryptoManager.decryptBytes(encData);
           const sha256 = await this.computeContentSha256(decrypted);

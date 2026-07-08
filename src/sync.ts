@@ -1,4 +1,6 @@
 import { requestUrl } from 'obsidian';
+import https from 'https';
+import http from 'http';
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -45,6 +47,7 @@ export interface PropfindEntry {
   href: string;
   etag: string;
   isCollection: boolean;
+  contentLength?: number;
 }
 
 export interface DownloadResult {
@@ -56,11 +59,15 @@ export interface UploadProgress {
   fileName: string;
   chunk: number;
   totalChunks: number;
+  speed: string;
+  pct: string;
 }
 
 export interface DownloadProgress {
   chunk: number;
   totalChunks: number;
+  speed: string;
+  pct: string;
 }
 
 export class WebDAVSync {
@@ -116,37 +123,45 @@ export class WebDAVSync {
   }
 
   private async makeRequest(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
-    if (!this.allowSelfSigned)
-      return this.makeRequestViaObsidian(method, fullUrl, headers, body);
+    if (!this.allowSelfSigned) return this.makeRequestViaObsidian(method, fullUrl, headers, body, timeoutMs);
 
-    let nodeRetries = 0;
-    while (nodeRetries < 3) {
+    const rejectUnauthorized = false;
+    let lastErr: Error | undefined;
+    for (let nodeRetries = 0; nodeRetries < 3; nodeRetries++) {
       try {
-        const res = await this.makeRequestViaNode(method, fullUrl, headers, body, timeoutMs);
+        const res = await this.makeRequestViaNode(method, fullUrl, headers, body, timeoutMs, rejectUnauthorized);
         if (res.status >= 500) {
-          nodeRetries++;
-          if (nodeRetries < 3) {
-            await WebDAVSync.sleep(1000 * nodeRetries);
+          if (nodeRetries < 2) {
+            await WebDAVSync.sleep(1000 * (nodeRetries + 1));
             continue;
           }
-          console.warn(`[makeRequest] Node.js returned HTTP ${res.status} after ${nodeRetries} retries for ${method} ${fullUrl}, falling back to Obsidian`);
-          return this.makeRequestViaObsidian(method, fullUrl, headers, body);
+          console.warn(`[makeRequest] Node.js returned HTTP ${res.status} after ${nodeRetries + 1} retries for ${method} ${fullUrl}, falling back to Obsidian`);
+          return this.makeRequestViaObsidian(method, fullUrl, headers, body, timeoutMs);
         }
         return res;
       } catch (e) {
-        const msg = String(e);
+        lastErr = e instanceof Error ? e : new Error(String(e));
+        const msg = lastErr.message;
         if (msg.includes('certificate') || msg.includes('CERT') || msg.includes('UNABLE_TO_VERIFY')) {
           setEnvTlsReject(true);
-          return this.makeRequestViaObsidian(method, fullUrl, headers, body);
+          return this.makeRequestViaObsidian(method, fullUrl, headers, body, timeoutMs);
         }
-        throw e;
+        if (nodeRetries < 2) {
+          console.warn(`[makeRequest] Node.js attempt ${nodeRetries + 1} failed for ${method} ${fullUrl}: ${msg}, retrying...`);
+          await WebDAVSync.sleep(2000 * (nodeRetries + 1));
+          continue;
+        }
       }
     }
-    throw new Error(`Node.js request failed after ${nodeRetries} retries`);
+    console.warn(`[makeRequest] Node.js failed after 3 retries for ${method} ${fullUrl}, falling back to Obsidian: ${lastErr?.message || 'unknown error'}`);
+    return this.makeRequestViaObsidian(method, fullUrl, headers, body, timeoutMs);
   }
 
-  private async makeRequestViaObsidian(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer): Promise<RequestResult> {
-    const response = await requestUrl({ url: fullUrl, method, headers, body, throw: false });
+  private async makeRequestViaObsidian(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs?: number): Promise<RequestResult> {
+    const obsHeaders = { ...headers };
+    delete obsHeaders['Content-Length'];
+    delete obsHeaders['OC-Chunked'];
+    const response = await requestUrl({ url: fullUrl, method, headers: obsHeaders, body, throw: false, timeout: timeoutMs } as any);
     const headersLower: Record<string, string> = {};
     for (const [k, v] of Object.entries(response.headers || {})) {
       headersLower[k.toLowerCase()] = v;
@@ -154,18 +169,20 @@ export class WebDAVSync {
     return { status: response.status, headers: headersLower, arrayBuffer: response.arrayBuffer, text: response.text };
   }
 
-  /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, n/no-unsupported-features/node-builtins -- require('https')/require('http') return untyped; Node.js builtins needed for self-signed cert support */
-  private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
-    const httpsMod = require('https') as NodeModule;
-    const httpMod = require('http') as NodeModule;
+  private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000, rejectUnauthorized = false): Promise<RequestResult> {
+    const httpsMod = https as unknown as NodeModule;
+    const httpMod = http as unknown as NodeModule;
 
     return new Promise<RequestResult>((resolve, reject) => {
       const urlObj = new URL(fullUrl);
       const isHttps = urlObj.protocol === 'https:';
       const port = urlObj.port || (isHttps ? 443 : 80);
       const mod = isHttps ? httpsMod : httpMod;
-      const agent = isHttps ? new httpsMod.Agent({ rejectUnauthorized: false }) : undefined;
+      const agent = isHttps ? new httpsMod.Agent({ rejectUnauthorized }) : undefined;
 
+      if (body && !headers['Content-Length']) {
+        headers['Content-Length'] = String(body.byteLength);
+      }
       const opts: NodeRequestOptions = {
         hostname: urlObj.hostname,
         port: parseInt(port.toString(), 10),
@@ -173,7 +190,7 @@ export class WebDAVSync {
         method,
         headers: { 'User-Agent': 'Obsidian WebDAV Sync Plugin/1.0', ...headers },
       };
-      if (isHttps) { opts.agent = agent; opts.rejectUnauthorized = false; }
+      if (isHttps) { opts.agent = agent; opts.rejectUnauthorized = rejectUnauthorized; }
 
       const req = mod.request(opts, (res: NodeIncomingMessage) => {
         const chunks: Buffer[] = [];
@@ -196,9 +213,6 @@ export class WebDAVSync {
       });
       req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
       if (body) {
-        if (!headers['Content-Length']) {
-          headers['Content-Length'] = String(body.byteLength);
-        }
         req.write(Buffer.from(body));
       }
       req.end();
@@ -294,6 +308,8 @@ export class WebDAVSync {
     console.log(`[uploadFile] PUT ${logName} (${dataSizeMb}MB, timeout=${timeout}ms)`);
     await new Promise(r => window.setTimeout(r, 5));
     let response: RequestResult;
+    const putStart = Date.now();
+    if (onProgress) onProgress({ fileName: logName, chunk: 0, totalChunks: 1, speed: '', pct: '0.0' });
     try {
       response = await this.makeRequest('PUT', this.getFullUrl(path), headers, this.uint8ArrayToBuffer(data), timeout);
       console.log(`[uploadFile] PUT ${logName} status: ${response.status}`);
@@ -305,6 +321,9 @@ export class WebDAVSync {
       }
       throw new Error(msg);
     }
+    const putElapsed = (Date.now() - putStart) / 1000;
+    const putSpeed = putElapsed > 0 ? `${(data.length / putElapsed / 1048576).toFixed(1)}MB/s` : '';
+    if (onProgress) onProgress({ fileName: logName, chunk: 1, totalChunks: 1, speed: putSpeed, pct: '100.0' });
     if (ifMatch !== undefined && response.status === 412) return null;
     if (response.status >= 400) throw new Error(`Upload failed for ${path} (HTTP ${response.status})`);
     return response.headers['etag'] || null;
@@ -345,9 +364,9 @@ export class WebDAVSync {
     }
 
     // Upload each chunk
+    const uploadStart = Date.now();
+    let bytesUploaded = 0;
     for (let i = 0; i < totalChunks; i++) {
-      if (onProgress) onProgress({ fileName: shortName, chunk: i + 1, totalChunks });
-
       await new Promise(r => window.setTimeout(r, 5));
       const start = i * chunkSizeBytes;
       const end = Math.min(start + chunkSizeBytes, data.length);
@@ -356,22 +375,42 @@ export class WebDAVSync {
       const chunkUrl = `${uploadDirUrl}${chunkName}`;
       const chunkSizeKb = (chunk.length / 1024).toFixed(0);
 
-      console.log(`[chunkedUpload] PUT chunk ${i + 1}/${totalChunks} (${chunkSizeKb}KB) → ${chunkUrl}`);
       let putRes: RequestResult;
-      try {
-        putRes = await this.makeRequest('PUT', chunkUrl, {
-          Authorization: auth,
-          'Content-Type': 'application/octet-stream',
-          'OC-Chunked': '1',
-        }, this.uint8ArrayToBuffer(chunk), timeout);
-        console.log(`[chunkedUpload] Chunk ${i + 1} PUT status: ${putRes.status}`);
-      } catch (e) {
-        console.log(`[chunkedUpload] Chunk ${i + 1} PUT threw: ${errorMessage(e)}`);
-        throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${logName} — ${errorMessage(e)}`);
-      }
+      let chunkAttempts = 0;
+      const MAX_CHUNK_RETRIES = 3;
+      while (chunkAttempts < MAX_CHUNK_RETRIES) {
+        chunkAttempts++;
+        console.log(`[chunkedUpload] PUT chunk ${i + 1}/${totalChunks} (attempt ${chunkAttempts}/${MAX_CHUNK_RETRIES}, ${chunkSizeKb}KB) → ${chunkUrl}`);
+        const chunkStart = Date.now();
+        try {
+          putRes = await this.makeRequest('PUT', chunkUrl, {
+            Authorization: auth,
+            'Content-Type': 'application/octet-stream',
+            'OC-Chunked': '1',
+          }, this.uint8ArrayToBuffer(chunk), timeout);
+          console.log(`[chunkedUpload] Chunk ${i + 1} PUT status: ${putRes.status}`);
+        } catch (e) {
+          console.log(`[chunkedUpload] Chunk ${i + 1} PUT threw: ${errorMessage(e)}`);
+          if (chunkAttempts >= MAX_CHUNK_RETRIES)
+            throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${logName} — ${errorMessage(e)}`);
+          await WebDAVSync.sleep(2000 * chunkAttempts);
+          continue;
+        }
 
-      if (putRes.status >= 400) {
-        throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${logName} (HTTP ${putRes.status})`);
+        if (putRes.status >= 400) {
+          if (chunkAttempts >= MAX_CHUNK_RETRIES)
+            throw new Error(`Chunked upload: chunk ${i + 1}/${totalChunks} failed for ${logName} (HTTP ${putRes.status})`);
+          console.log(`[chunkedUpload] Retrying chunk ${i + 1} after HTTP ${putRes.status}...`);
+          await WebDAVSync.sleep(2000 * chunkAttempts);
+          continue;
+        }
+        bytesUploaded += chunk.length;
+        const elapsed = (Date.now() - uploadStart) / 1000;
+        const speedBps = elapsed > 0 ? bytesUploaded / elapsed : 0;
+        const speedStr = speedBps >= 1048576 ? `${(speedBps / 1048576).toFixed(1)}MB/s` : `${(speedBps / 1024).toFixed(0)}KB/s`;
+        const pct = ((bytesUploaded / data.length) * 100).toFixed(1);
+        if (onProgress) onProgress({ fileName: shortName, chunk: i + 1, totalChunks, speed: speedStr, pct });
+        break;
       }
     }
 
@@ -397,7 +436,34 @@ export class WebDAVSync {
 
     console.log(`[chunkedUpload] Successfully uploaded ${logName}`);
 
-    // Fetch etag of assembled file
+    // Verify assembled file has content (retry if still 0)
+    const expectedSize = data.length;
+    for (let v = 0; v < 5; v++) {
+      await WebDAVSync.sleep(1000);
+      try {
+        const propRes = await this.makeRequest('PROPFIND', targetUrl, {
+          Depth: '0',
+          Authorization: auth,
+        });
+        if (propRes.status < 400) {
+          const entries = this.parsePropfindMultistatus(propRes.text);
+          if (entries.length > 0) {
+            const size = entries[0].contentLength || 0;
+            console.log(`[chunkedUpload] Verified assembled file: ${size} bytes (expected ${expectedSize})`);
+            if (size >= expectedSize) {
+              return entries[0].etag || null;
+            }
+            if (size > 0) {
+              console.warn(`[chunkedUpload] Assembled file size ${size} < expected ${expectedSize}, retrying verification...`);
+            } else {
+              console.warn(`[chunkedUpload] Assembled file still 0 bytes, retrying...`);
+            }
+          }
+        }
+      } catch { /* retry */ }
+    }
+    console.warn(`[chunkedUpload] File size check failed after 5 retries, proceeding with etag from headers`);
+
     try {
       const propRes = await this.makeRequest('PROPFIND', targetUrl, {
         Depth: '0',
@@ -476,6 +542,8 @@ export class WebDAVSync {
     }
 
     const totalChunks = ranges.length;
+    const dlStart = Date.now();
+    let dlBytes = 0;
 
     const fetchOne = async (r: { start: number; end: number }, i: number): Promise<RequestResult> => {
       let lastErr: Error | undefined;
@@ -486,7 +554,12 @@ export class WebDAVSync {
             Range: `bytes=${r.start}-${r.end}`,
           }, undefined, CHUNK_TIMEOUT);
           if (res.status === 206) {
-            if (onProgress) onProgress({ chunk: i + 1, totalChunks });
+            dlBytes += res.arrayBuffer.byteLength;
+            const dlElapsed = (Date.now() - dlStart) / 1000;
+            const dlSpeedBps = dlElapsed > 0 ? dlBytes / dlElapsed : 0;
+            const dlSpeed = dlSpeedBps >= 1048576 ? `${(dlSpeedBps / 1048576).toFixed(1)}MB/s` : `${(dlSpeedBps / 1024).toFixed(0)}KB/s`;
+            const dlPct = ((dlBytes / contentLength) * 100).toFixed(1);
+            if (onProgress) onProgress({ chunk: i + 1, totalChunks, speed: dlSpeed, pct: dlPct });
             return res;
           }
           lastErr = new Error(`HTTP ${res.status}`);
@@ -561,7 +634,9 @@ export class WebDAVSync {
       if (href === null) continue;
       const etag = (this.extractTagText(block, 'getetag') || '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
       const isCollection = this.hasEmptyTag(block, 'collection');
-      entries.push({ href, etag, isCollection });
+      const contentLengthStr = this.extractTagText(block, 'getcontentlength');
+      const contentLength = contentLengthStr ? parseInt(contentLengthStr, 10) : undefined;
+      entries.push({ href, etag, isCollection, contentLength: isNaN(contentLength!) ? undefined : contentLength });
     }
     return entries;
   }
