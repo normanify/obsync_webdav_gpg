@@ -146,18 +146,18 @@ export class WebDAVSync {
     return { status: response.status, headers: headersLower, arrayBuffer: response.arrayBuffer, text: response.text };
   }
 
+  /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument -- Node.js http/https module types are not resolvable by eslint when moduleResolution:bundler is used; the APIs are properly typed via @types/node at compile time */
   private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000, rejectUnauthorized = false): Promise<RequestResult> {
     return new Promise<RequestResult>((resolve, reject) => {
       const urlObj = new URL(fullUrl);
       const isHttps = urlObj.protocol === 'https:';
-      const port = urlObj.port || (isHttps ? 443 : 80);
 
       if (body && !headers['Content-Length']) {
         headers['Content-Length'] = String(body.byteLength);
       }
       const opts: http.RequestOptions = {
         hostname: urlObj.hostname,
-        port: parseInt(port.toString(), 10),
+        port: parseInt(urlObj.port || (isHttps ? '443' : '80'), 10),
         path: urlObj.pathname + urlObj.search,
         method,
         headers: { 'User-Agent': 'Obsidian WebDAV Sync Plugin/1.0', ...headers },
@@ -198,6 +198,7 @@ export class WebDAVSync {
       req.end();
     });
   }
+  /* eslint-enable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument -- Node.js http/https APIs */
 
   async testConnection(): Promise<void> {
     const response = await this.makeRequest('PROPFIND', this.url, { Depth: '0', Authorization: this.getAuthHeader() });
