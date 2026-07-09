@@ -6,20 +6,6 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-interface ObsRequestUrlParam {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  body?: ArrayBuffer;
-  throw: boolean;
-  timeout?: number;
-}
-
-interface NodeModule {
-  Agent: new (opts?: Record<string, unknown>) => http.Agent;
-  request(opts: http.RequestOptions, cb: (res: http.IncomingMessage) => void): http.ClientRequest;
-}
-
 interface RequestResult {
   status: number;
   headers: Record<string, string>;
@@ -145,7 +131,14 @@ export class WebDAVSync {
     const obsHeaders = { ...headers };
     delete obsHeaders['Content-Length'];
     delete obsHeaders['OC-Chunked'];
-    const response = await requestUrl({ url: fullUrl, method, headers: obsHeaders, body, throw: false, timeout: timeoutMs } as ObsRequestUrlParam);
+    const response = await requestUrl({
+      url: fullUrl,
+      method,
+      headers: obsHeaders,
+      body,
+      throw: false,
+      timeout: timeoutMs,
+    });
     const headersLower: Record<string, string> = {};
     for (const [k, v] of Object.entries(response.headers || {})) {
       headersLower[k.toLowerCase()] = v;
@@ -154,15 +147,10 @@ export class WebDAVSync {
   }
 
   private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000, rejectUnauthorized = false): Promise<RequestResult> {
-    const httpsMod = https as NodeModule;
-    const httpMod = http as NodeModule;
-
     return new Promise<RequestResult>((resolve, reject) => {
       const urlObj = new URL(fullUrl);
       const isHttps = urlObj.protocol === 'https:';
       const port = urlObj.port || (isHttps ? 443 : 80);
-      const mod = isHttps ? httpsMod : httpMod;
-      const agent = isHttps ? new httpsMod.Agent({ rejectUnauthorized }) : undefined;
 
       if (body && !headers['Content-Length']) {
         headers['Content-Length'] = String(body.byteLength);
@@ -174,32 +162,37 @@ export class WebDAVSync {
         method,
         headers: { 'User-Agent': 'Obsidian WebDAV Sync Plugin/1.0', ...headers },
       };
-      if (isHttps) { opts.agent = agent; (opts as https.RequestOptions).rejectUnauthorized = rejectUnauthorized; }
 
-      const req = mod.request(opts, (res: http.IncomingMessage) => {
+      const onResponse = (res: http.IncomingMessage) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => {
           const data = Buffer.concat(chunks);
           const text = (() => { try { return data.toString('utf-8'); } catch { return ''; } })();
           const headersOut: Record<string, string> = {};
-          if (res.headers) {
-            for (const [k, v] of Object.entries(res.headers)) {
-              headersOut[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v ?? '');
-            }
+          for (const [k, v] of Object.entries(res.headers ?? {})) {
+            headersOut[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v ?? '');
           }
-          resolve({ status: res.statusCode || 500, headers: headersOut, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
+          resolve({ status: res.statusCode ?? 500, headers: headersOut, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
         });
-      });
-      req.on('error', (err: Error) => {
-        const nodeErr = err as NodeJS.ErrnoException;
-        if (nodeErr.code === 'EPIPE' || err.message?.includes('socket hang up')) {
+      };
+
+      const onError = (err: Error) => {
+        if (err.message?.includes('EPIPE') || err.message?.includes('socket hang up')) {
           const bodySize = body ? ` (body size: ${body.byteLength} bytes)` : '';
           reject(new Error(`Connection closed by server during request${bodySize} — EPIPE/socket hang up. The server may have a request size limit or does not support the requested operation.`));
         } else {
           reject(new Error(String(err)));
         }
-      });
+      };
+
+      let req: http.ClientRequest;
+      if (isHttps) {
+        req = https.request({ ...opts, rejectUnauthorized, agent: new https.Agent({ rejectUnauthorized }) }, onResponse);
+      } else {
+        req = http.request(opts, onResponse);
+      }
+      req.on('error', onError);
       req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
       if (body) req.write(Buffer.from(body));
       req.end();
