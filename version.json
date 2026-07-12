@@ -1,4 +1,8 @@
 {
+  "2.0.0": {
+    "minAppVersion": "1.6.6",
+    "description": "Switch from RSA 4096 (OpenPGP) to ML-KEM-768 post-quantum encryption. Breaking: removes passphrase, renames privateKey to secretKey, uses base64 key format. Old encrypted data cannot be decrypted with new keys."
+  },
   "1.0.0": {
     "minAppVersion": "0.15.0",
     "description": "Initial release"

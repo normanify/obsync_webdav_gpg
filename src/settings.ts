@@ -10,9 +10,7 @@ export interface ObsyncSettings {
   webdavUsername: string;
   webdavPassword: string;
   publicKey: string;
-  privateKey: string;
-  passphrase: string;
-  storePassphrase: boolean;
+  secretKey: string;
   excludePaths: string;
   allowSelfSignedCerts: boolean;
   autoSyncOnSave: boolean;
@@ -26,9 +24,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   webdavUsername: '',
   webdavPassword: '',
   publicKey: '',
-  privateKey: '',
-  passphrase: '',
-  storePassphrase: false,
+  secretKey: '',
   excludePaths: '<configDir>/plugins/,.trash/',
   allowSelfSignedCerts: false,
   autoSyncOnSave: false,
@@ -113,52 +109,22 @@ export class ObsyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl).setName('GPG Keys').setHeading();
+    new Setting(containerEl).setName('Post-Quantum Keys').setHeading();
 
     const pubLoaded = !!this.plugin.cryptoManager['publicKey'];
-    const privLoaded = !!this.plugin.cryptoManager['privateKey'];
+    const privLoaded = !!this.plugin.cryptoManager['secretKey'];
 
     containerEl.createEl('p', {
-      text: `Public key: ${pubLoaded ? '✓ loaded' : '—'}  |  Private key: ${privLoaded ? '✓ loaded' : '—'}`,
+      text: `Public key: ${pubLoaded ? '✓ loaded' : '—'}  |  Secret key: ${privLoaded ? '✓ loaded' : '—'}`,
       cls: 'obsync-status',
     });
 
     new Setting(containerEl)
-      .setName('Passphrase')
-      .setDesc('Passphrase for your private GPG key')
-      .addText(text => {
-        text.inputEl.type = 'password';
-        text.setValue(this.plugin.settings.passphrase);
-        text.onChange(async value => {
-          this.plugin.settings.passphrase = value;
-          await this.plugin.saveSettings();
-          await this.plugin.loadKeys();
-          this.display();
-        });
-      });
-
-    new Setting(containerEl)
-      .setName('Store Passphrase')
-      .setDesc('Save passphrase to disk (required for automated sync). Warning: stored in plaintext.')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.storePassphrase)
-        .onChange(async value => {
-          this.plugin.settings.storePassphrase = value;
-          if (!value) this.plugin.settings.passphrase = '';
-          await this.plugin.saveSettings();
-          this.display();
-        }));
-
-    new Setting(containerEl)
       .setName('Generate Key Pair')
-      .setDesc('Generate a new RSA 4096-bit GPG key pair for first-time setup')
+      .setDesc('Generate a new ML-KEM-768 (post-quantum) key pair for first-time setup')
       .addButton(btn => btn
         .setButtonText('Generate')
         .onClick(async () => {
-          if (!this.plugin.settings.passphrase) {
-            new Notice('Please set a passphrase first');
-            return;
-          }
           try {
             await this.plugin.generateKeyPair();
             this.display();
@@ -168,10 +134,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName('Public Key (armored)')
+      .setName('Public Key (base64)')
       .setDesc('Paste an existing public key, or copy the one generated above for sharing')
       .addTextArea(text => {
-        text.setPlaceholder('-----BEGIN PGP PUBLIC KEY BLOCK-----');
+        text.setPlaceholder('Paste base64-encoded public key');
         text.setValue(this.plugin.settings.publicKey);
         text.onChange(async value => {
           this.plugin.settings.publicKey = value;
@@ -184,18 +150,16 @@ export class ObsyncSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('Private Key (armored)')
-      .setDesc('Paste your existing private key here to restore on a new device')
+      .setName('Secret Key (base64)')
+      .setDesc('Paste your secret key here to restore on a new device (keep secret!)')
       .addTextArea(text => {
-        text.setPlaceholder('-----BEGIN PGP PRIVATE KEY BLOCK-----');
-        text.setValue(this.plugin.settings.privateKey);
+        text.setPlaceholder('Paste base64-encoded secret key');
+        text.setValue(this.plugin.settings.secretKey);
         text.onChange(async value => {
-          this.plugin.settings.privateKey = value;
+          this.plugin.settings.secretKey = value;
           await this.plugin.saveSettings();
-          if (this.plugin.settings.passphrase) {
-            await this.plugin.loadKeys();
-            this.display();
-          }
+          await this.plugin.loadKeys();
+          this.display();
         });
         text.inputEl.rows = 4;
         text.inputEl.addClass('obsync-mono');
@@ -204,7 +168,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     if (privLoaded) {
       new Setting(containerEl)
         .setName('Decryption Test')
-        .setDesc('Private key is loaded and ready for restore')
+        .setDesc('Secret key is loaded and ready for restore')
         .addButton(btn => btn
           .setButtonText('Test Decrypt')
           .setCta()
@@ -278,7 +242,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Export Config')
-      .setDesc('Download all plugin settings (keys, passphrase, WebDAV credentials) as JSON')
+      .setDesc('Download all plugin settings (keys, WebDAV credentials) as JSON')
       .addButton(btn => btn
         .setButtonText('Export')
         .onClick(() => this.plugin.exportConfig()));

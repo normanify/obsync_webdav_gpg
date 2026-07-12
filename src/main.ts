@@ -4,10 +4,6 @@ import { WebDAVSync } from './sync';
 import { ObsyncSettings, DEFAULT_SETTINGS, ObsyncSettingTab } from './settings';
 import { JournalManager } from './journal';
 
-interface ElectronShell {
-  openPath: (path: string) => Promise<string>;
-}
-
 interface FileSyncEntry {
   remotePath: string;
   etag: string;
@@ -238,7 +234,7 @@ export default class ObsyncPlugin extends Plugin {
 
     this.addCommand({
       id: 'generate-key-pair',
-      name: 'Generate GPG Key Pair',
+      name: 'Generate Post-Quantum Key Pair',
       callback: () => this.generateKeyPair(),
     });
 
@@ -457,15 +453,23 @@ export default class ObsyncPlugin extends Plugin {
 
   private async decryptPathSegment(enc: string): Promise<string> {
     const cached = this.encToPlain.get(enc);
-    if (cached) return cached;
+    if (cached) { console.log(`[decrypt] cache hit: "${enc}" → "${cached}"`); return cached; }
     if (/^[0-9a-f]{40}$/.test(enc)) {
+      console.log(`[decrypt] 40-char hash not in cache: "${enc}"`);
       throw new Error(`Cannot decrypt short path segment "${enc}" — segment cache not available. Try re-syncing from a device with the full cache.`);
     }
+    console.log(`[decrypt] decrypting segment "${enc}"...`);
     const combined = base64urlDecode(enc);
-    const plain = await this.cryptoManager.decryptPathSegment(combined);
-    this.encToPlain.set(enc, plain);
-    this.plainToEnc.set(plain, enc);
-    return plain;
+    try {
+      const plain = await this.cryptoManager.decryptPathSegment(combined);
+      this.encToPlain.set(enc, plain);
+      this.plainToEnc.set(plain, enc);
+      console.log(`[decrypt] segment "${enc}" → "${plain}"`);
+      return plain;
+    } catch (e) {
+      console.log(`[decrypt] decryptPathSegment FAILED for "${enc}"`, e, `name=${(e as Error).name} msg=${(e as Error).message} toString=${String(e)}`);
+      throw e;
+    }
   }
 
   private async vaultPathToRemote(vaultPath: string): Promise<string> {
@@ -478,7 +482,7 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   private async remotePathToVault(remotePath: string): Promise<string | null> {
-    if (!remotePath.endsWith('.enc')) return null;
+    if (!remotePath.endsWith('.enc')) { console.log(`[decrypt] skip: "${remotePath}" does not end with .enc`); return null; }
     const pathNoExt = remotePath.slice(0, -4);
     const segments = pathNoExt.split('/');
     const plainSegments: string[] = [];
@@ -517,26 +521,27 @@ export default class ObsyncPlugin extends Plugin {
   async loadKeys(): Promise<boolean> {
     let ok = false;
     if (this.settings.publicKey) {
-      try { await this.cryptoManager.loadPublicKey(this.settings.publicKey); ok = true; } catch (e) { console.error('Failed to load public key:', e); }
+      try {
+        await this.cryptoManager.loadPublicKey(this.settings.publicKey);
+        ok = true;
+      } catch (e) { console.error('Failed to load public key:', e); }
     }
-    if (this.settings.privateKey && this.settings.passphrase) {
-      try { await this.cryptoManager.loadPrivateKey(this.settings.privateKey, this.settings.passphrase); ok = true; } catch (e) { console.error('Failed to load private key:', e); }
+    if (this.settings.secretKey) {
+      try {
+        await this.cryptoManager.loadSecretKey(this.settings.secretKey);
+      } catch (e) { console.error('Failed to load secret key:', e); }
     }
     return ok;
   }
 
   async generateKeyPair(): Promise<void> {
-    if (!this.settings.passphrase) {
-      new Notice('Please set a passphrase in settings first');
-      return;
-    }
     try {
-      const { publicKey, privateKey } = await this.cryptoManager.generateKeyPair(this.settings.passphrase);
+      const { publicKey, secretKey } = await this.cryptoManager.generateKeyPair();
       this.settings.publicKey = publicKey;
-      this.settings.privateKey = privateKey;
+      this.settings.secretKey = secretKey;
       await this.saveSettings();
       await this.loadKeys();
-      new Notice('GPG key pair generated successfully');
+      new Notice('ML-KEM-768 key pair generated successfully');
     } catch (e) {
       console.error('Key generation error:', e);
       new Notice('Failed to generate keys: ' + errorMessage(e));
@@ -732,7 +737,7 @@ export default class ObsyncPlugin extends Plugin {
   async syncToWebDAV(): Promise<void> {
     if (this.isSyncing) return;
     if (!this.cryptoManager.isReady()) {
-      new Notice('Please generate or import GPG keys first');
+      new Notice('Please generate or import post-quantum keys first');
       return;
     }
     this.isSyncing = true;
@@ -919,6 +924,28 @@ export default class ObsyncPlugin extends Plugin {
         remotePathToVault.set(entry.remotePath, vp);
       }
 
+      console.log(`[sync] fingerprint=${this.cryptoManager.getFingerprint()}`);
+
+      // Crypto self-test: verify path segment encrypt/decrypt round-trips
+      try {
+        const testPath = '__crypto_test__';
+        const encTest = await this.encryptPathSegment(testPath);
+        const decTest = await this.decryptPathSegment(encTest);
+        if (decTest === testPath) {
+          console.log(`[sync] crypto self-test OK: "${encTest}" → "${decTest}"`);
+        } else {
+          console.warn(`[sync] crypto self-test MISMATCH: "${testPath}" → "${encTest}" → "${decTest}"`);
+        }
+      } catch (e) {
+        console.error(`[sync] crypto self-test FAILED:`, e);
+      }
+
+      // Delete corrupted remote manifest (encrypted with wrong public key from previous buggy state)
+      try {
+        await this.syncClient.deleteFile(REMOTE_MANIFEST_PATH);
+        console.log('[sync] Deleted corrupted remote manifest');
+      } catch { /* file may not exist */ }
+
       /* Download remote manifest for SHA-based download skip and segment cache */
       const remoteShaByVaultPath = new Map<string, string>();
       try {
@@ -941,15 +968,18 @@ export default class ObsyncPlugin extends Plugin {
       }
 
       /* ── PULL (Remote → Local) ── */
+      console.log(`[sync] PULL phase: ${remoteFiles.size} remote files, ${remoteDirs.size} remote dirs`);
       for (const [remotePath, remoteEtag] of remoteFiles) {
+        console.log(`[sync] PULL candidate: "${remotePath}" (ends with .enc: ${remotePath.endsWith('.enc')})`);
         let vaultPath = remotePathToVault.get(remotePath);
         let wasNewPath = false;
 
         if (!vaultPath) {
           vaultPath = await this.remotePathToVault(remotePath);
-          if (!vaultPath) continue;
+          if (!vaultPath) { console.log(`[sync] PULL skip: remotePathToVault returned null for "${remotePath}"`); continue; }
           wasNewPath = true;
         }
+        console.log(`[sync] PULL decrypt OK: "${remotePath}" → "${vaultPath}"`);
         this.log(`[pull] ${vaultPath}`);
 
         if (this.isExcluded(vaultPath)) continue;
@@ -998,20 +1028,8 @@ export default class ObsyncPlugin extends Plugin {
           );
           let newEtag = newEtagSrc;
           await this.yieldToUI();
-          const wasLegacy = !this.cryptoManager.isHybridFormat(encData);
           const decrypted = await this.cryptoManager.decryptBytes(encData);
           await this.yieldToUI();
-
-          // Re-upload legacy-format files with hybrid format
-          if (wasLegacy && !this.isExcluded(vaultPath)) {
-            try {
-              const reEncrypted = await this.cryptoManager.encryptBytes(decrypted);
-              const newEtagAfter = await this.syncClient.uploadFile(remotePath, reEncrypted);
-              if (newEtagAfter) newEtag = newEtagAfter;
-            } catch (e) {
-              console.warn(`Failed to re-upload legacy file ${remotePath}:`, e);
-            }
-          }
           const remoteSha = await this.computeContentSha256(decrypted);
           const localFile = this.app.vault.getAbstractFileByPath(vaultPath);
 
@@ -1250,7 +1268,7 @@ export default class ObsyncPlugin extends Plugin {
   async restoreFromWebDAV(): Promise<void> {
     if (this.isSyncing) return;
     if (!this.cryptoManager.canDecrypt()) {
-      new Notice('Please load the private key with passphrase first');
+      new Notice('Please load the secret key first');
       return;
     }
     this.isSyncing = true;

@@ -1,139 +1,115 @@
-import * as openpgp from 'openpgp';
+import { ml_kem768 } from '@noble/post-quantum/ml-kem.js';
 
-const HYBRID_MAGIC = new Uint8Array([79, 66, 83, 89, 78, 67, 45, 72]); // "OBSYNC-H"
+const PQ_MAGIC = new Uint8Array([79, 66, 83, 89, 78, 67, 45, 75]); // "OBSYNC-K"
 const MAGIC_LEN = 8;
-const KEY_LEN_BYTES = 4;
+const CT_LEN = 1088; // ML-KEM-768 ciphertext size
 const IV_LEN = 12;
-
-function u32ToBytes(v: number): Uint8Array {
-  return new Uint8Array([v >>> 24, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff]);
-}
-
-function bytesToU32(buf: Uint8Array, offset: number): number {
-  return (buf[offset] << 24) | (buf[offset + 1] << 16) | (buf[offset + 2] << 8) | buf[offset + 3];
-}
 
 function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 }
- 
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
 export class CryptoManager {
-  private publicKey: openpgp.PublicKey | null = null;
-  private privateKey: openpgp.PrivateKey | null = null;
+  private publicKey: Uint8Array | null = null;
+  private secretKey: Uint8Array | null = null;
+  private fingerprint = '';
 
   isReady(): boolean {
     return this.publicKey !== null;
   }
 
   canDecrypt(): boolean {
-    return this.privateKey !== null;
+    return this.secretKey !== null;
   }
 
-  async generateKeyPair(passphrase: string): Promise<{ publicKey: string; privateKey: string }> {
-    const result = await openpgp.generateKey({
-      type: 'rsa',
-      rsaBits: 4096,
-      userIDs: [{ name: 'Obsync User' }],
-      passphrase,
-      format: 'armored',
-    });
-    return { publicKey: result.publicKey, privateKey: result.privateKey };
+  async generateKeyPair(): Promise<{ publicKey: string; secretKey: string }> {
+    const keys = ml_kem768.keygen();
+    return {
+      publicKey: bytesToBase64(keys.publicKey),
+      secretKey: bytesToBase64(keys.secretKey),
+    };
   }
 
-  async loadPublicKey(armored: string): Promise<void> {
-    this.publicKey = await openpgp.readKey({ armoredKey: armored });
+  async loadPublicKey(b64: string): Promise<void> {
+    this.publicKey = base64ToBytes(b64);
+    const hash = await crypto.subtle.digest('SHA-256', this.publicKey);
+    this.fingerprint = Array.from(new Uint8Array(hash))
+      .map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
-  async loadPrivateKey(armored: string, passphrase: string): Promise<void> {
-    const key = await openpgp.readPrivateKey({ armoredKey: armored });
-    this.privateKey = await openpgp.decryptKey({ privateKey: key, passphrase });
+  async loadSecretKey(b64: string): Promise<void> {
+    this.secretKey = base64ToBytes(b64);
+  }
+
+  getFingerprint(): string {
+    return this.fingerprint || '(no key loaded)';
   }
 
   async encryptText(text: string): Promise<string> {
-    if (!this.publicKey) throw new Error('Public key not loaded');
-    const message = await openpgp.createMessage({ text });
-    return await openpgp.encrypt({ message, encryptionKeys: this.publicKey });
+    const enc = await this.encryptBytes(new TextEncoder().encode(text));
+    return bytesToBase64(enc);
   }
 
-  async decryptText(armored: string): Promise<string> {
-    if (!this.privateKey) throw new Error('Private key not loaded');
-    const message = await openpgp.readMessage({ armoredMessage: armored });
-    const { data } = await openpgp.decrypt({ message, decryptionKeys: this.privateKey });
-    return data as string;
+  async decryptText(b64: string): Promise<string> {
+    const dec = await this.decryptBytes(base64ToBytes(b64));
+    return new TextDecoder().decode(dec);
   }
 
   async encryptBytes(data: Uint8Array): Promise<Uint8Array> {
     if (!this.publicKey) throw new Error('Public key not loaded');
 
-    // Generate random AES-256 key
-    const aesKeyRaw = crypto.getRandomValues(new Uint8Array(32));
-    const aesKey = await crypto.subtle.importKey('raw', aesKeyRaw, 'AES-GCM', false, ['encrypt']);
+    const { cipherText, sharedSecret } = ml_kem768.encapsulate(this.publicKey);
 
-    // Encrypt bulk data with AES-GCM via Web Crypto (non-blocking)
+    const aesKey = await crypto.subtle.importKey('raw', sharedSecret, 'AES-GCM', false, ['encrypt']);
     const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
     const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, data));
 
-    // Encrypt the AES key with OpenPGP (small data, fast)
-    const keyMsg = await openpgp.createMessage({ binary: aesKeyRaw });
-    const encryptedKey = new Uint8Array(await openpgp.encrypt({
-      message: keyMsg,
-      encryptionKeys: this.publicKey,
-      format: 'binary',
-    }));
-
-    // Build hybrid format: magic + keyLen + RSA-encrypted key + IV + AES ciphertext
-    const result = new Uint8Array(MAGIC_LEN + KEY_LEN_BYTES + encryptedKey.length + IV_LEN + ciphertext.length);
-    result.set(HYBRID_MAGIC, 0);
-    result.set(u32ToBytes(encryptedKey.length), MAGIC_LEN);
-    result.set(encryptedKey, MAGIC_LEN + KEY_LEN_BYTES);
-    result.set(iv, MAGIC_LEN + KEY_LEN_BYTES + encryptedKey.length);
-    result.set(ciphertext, MAGIC_LEN + KEY_LEN_BYTES + encryptedKey.length + IV_LEN);
+    const result = new Uint8Array(MAGIC_LEN + CT_LEN + IV_LEN + ciphertext.length);
+    result.set(PQ_MAGIC, 0);
+    result.set(cipherText, MAGIC_LEN);
+    result.set(iv, MAGIC_LEN + CT_LEN);
+    result.set(ciphertext, MAGIC_LEN + CT_LEN + IV_LEN);
     return result;
   }
 
-  isHybridFormat(data: Uint8Array): boolean {
-    return data.length >= MAGIC_LEN && arraysEqual(data.subarray(0, MAGIC_LEN), HYBRID_MAGIC);
+  isPqFormat(data: Uint8Array): boolean {
+    return data.length >= MAGIC_LEN && arraysEqual(data.subarray(0, MAGIC_LEN), PQ_MAGIC);
   }
 
   async decryptBytes(data: Uint8Array): Promise<Uint8Array> {
-    if (!this.privateKey) throw new Error('Private key not loaded');
+    if (!this.secretKey) throw new Error('Secret key not loaded');
 
-    if (this.isHybridFormat(data)) {
-      const keyLen = bytesToU32(data, MAGIC_LEN);
-      const keyStart = MAGIC_LEN + KEY_LEN_BYTES;
-      const ivStart = keyStart + keyLen;
-      const ctStart = ivStart + IV_LEN;
-
-      // Decrypt the AES key with OpenPGP (small data, fast)
-      const encKeyData = data.subarray(keyStart, ivStart);
-      const keyMsg = await openpgp.readMessage({ binaryMessage: encKeyData });
-      const { data: aesKeyRaw } = await openpgp.decrypt({
-        message: keyMsg,
-        decryptionKeys: this.privateKey,
-        format: 'binary',
-      });
-
-      // Decrypt bulk data with AES-GCM via Web Crypto (non-blocking)
-      const aesKey = await crypto.subtle.importKey('raw', aesKeyRaw as Uint8Array, 'AES-GCM', false, ['decrypt']);
-      const iv = data.subarray(ivStart, ctStart);
-      const ciphertext = data.subarray(ctStart);
-      const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext);
-      return new Uint8Array(decrypted);
+    if (!this.isPqFormat(data)) {
+      throw new Error('Unrecognized encryption format — not a valid OBSYNC-K payload');
     }
 
-    // Legacy OpenPGP format
-    const message = await openpgp.readMessage({ binaryMessage: data });
-    const { data: decrypted } = await openpgp.decrypt({
-      message,
-      decryptionKeys: this.privateKey,
-      format: 'binary',
-    });
-    return decrypted as Uint8Array;
+    const cipherText = data.subarray(MAGIC_LEN, MAGIC_LEN + CT_LEN);
+    const iv = data.subarray(MAGIC_LEN + CT_LEN, MAGIC_LEN + CT_LEN + IV_LEN);
+    const ciphertext = data.subarray(MAGIC_LEN + CT_LEN + IV_LEN);
+
+    const sharedSecret = ml_kem768.decapsulate(cipherText, this.secretKey);
+
+    const aesKey = await crypto.subtle.importKey('raw', sharedSecret, 'AES-GCM', false, ['decrypt']);
+    const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext);
+    return new Uint8Array(decrypted);
   }
 
-  /* Path segment encryption (AES-256-GCM) — short output suitable for filenames */
+  /* Path segment encryption (AES-256-GCM) */
 
   private aesKey: CryptoKey | null = null;
   private aesKeyPromise: Promise<CryptoKey> | null = null;
@@ -148,10 +124,9 @@ export class CryptoManager {
   }
 
   private async deriveAESKey(): Promise<CryptoKey> {
-    if (!this.publicKey) throw new Error('Public key not loaded');
-    const fingerprint = this.publicKey.getFingerprint();
+    if (!this.fingerprint) throw new Error('No key loaded — load a public key first');
     const keyMaterial = await crypto.subtle.importKey(
-      'raw', new TextEncoder().encode(fingerprint), 'PBKDF2', false, ['deriveBits', 'deriveKey'],
+      'raw', new TextEncoder().encode(this.fingerprint), 'PBKDF2', false, ['deriveBits', 'deriveKey'],
     );
     return crypto.subtle.deriveKey(
       { name: 'PBKDF2', salt: new TextEncoder().encode('obsync-path-v2'), iterations: 100000, hash: 'SHA-256' },
