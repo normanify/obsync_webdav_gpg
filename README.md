@@ -1,4 +1,6 @@
-# WebDAV PQC Sync
+# WebDAV GPG Sync
+
+> [中文版 README](README_zh.md)
 
 > **⚠️ v2.0.0 BREAKING CHANGE — Not backward compatible**
 >
