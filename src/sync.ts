@@ -146,7 +146,6 @@ export class WebDAVSync {
     return { status: response.status, headers: headersLower, arrayBuffer: response.arrayBuffer, text: response.text };
   }
 
-  /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument -- Node.js http/https module types are not resolvable by eslint when moduleResolution:bundler is used; the APIs are properly typed via @types/node at compile time */
   private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000, rejectUnauthorized = false): Promise<RequestResult> {
     return new Promise<RequestResult>((resolve, reject) => {
       const urlObj = new URL(fullUrl);
@@ -198,8 +197,6 @@ export class WebDAVSync {
       req.end();
     });
   }
-  /* eslint-enable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument -- Node.js http/https APIs */
-
   async testConnection(): Promise<void> {
     const response = await this.makeRequest('PROPFIND', this.url, { Depth: '0', Authorization: this.getAuthHeader() });
     if (response.status >= 400) throw new Error(`WebDAV connection failed (HTTP ${response.status})`);
@@ -264,7 +261,7 @@ export class WebDAVSync {
   async uploadFile(path: string, data: Uint8Array, ifMatch?: string, onProgress?: (p: UploadProgress) => void, displayName?: string): Promise<string | null> {
     const chunkSizeBytes = this.chunkSizeMb * 1024 * 1024;
     const fileSizeMb = (data.length / (1024 * 1024)).toFixed(1);
-    let useChunked = data.length > chunkSizeBytes;
+    const useChunked = data.length > chunkSizeBytes;
 
     if (useChunked) {
       console.log(`[uploadFile] File size ${fileSizeMb}MB > chunkSize ${this.chunkSizeMb}MB, trying chunked upload`);
@@ -361,7 +358,6 @@ export class WebDAVSync {
       while (chunkAttempts < MAX_CHUNK_RETRIES) {
         chunkAttempts++;
         console.log(`[chunkedUpload] PUT chunk ${i + 1}/${totalChunks} (attempt ${chunkAttempts}/${MAX_CHUNK_RETRIES}, ${chunkSizeKb}KB) → ${chunkUrl}`);
-        const chunkStart = Date.now();
         try {
           putRes = await this.makeRequest('PUT', chunkUrl, {
             Authorization: auth,
@@ -657,7 +653,6 @@ export class WebDAVSync {
   }
 }
 
-/* eslint-disable @typescript-eslint/no-unsafe-member-access -- process.env cast needed for env var mutation */
 let envTlsRejectSet = false;
 function setEnvTlsReject(state: boolean): void {
   if (state && !envTlsRejectSet) {
@@ -668,5 +663,5 @@ function setEnvTlsReject(state: boolean): void {
     envTlsRejectSet = false;
   }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access -- process.env cast needed for env var mutation */
+
 

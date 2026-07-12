@@ -180,7 +180,7 @@ export default class ObsyncPlugin extends Plugin {
           // Open with default system app
           leaf.detach();
           try {
-            const shellPath = String(this.app.vault.adapter.getFullPath(file.path)); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API; needed to resolve vault base path
+            const shellPath = String(this.app.vault.adapter.getFullPath(file.path));
             void openFileWithDefaultApp(shellPath);
           } catch (e) {
             console.error('[on-demand] openWithDefaultApp failed:', e);
@@ -211,7 +211,7 @@ export default class ObsyncPlugin extends Plugin {
                 if (leaf) leaf.openFile(file).catch(e => console.error('[on-demand] openFile failed:', e));
               } else {
                 try {
-                  void openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path))); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API; needed to resolve vault base path
+                  void openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path)));
                 } catch { /* ignore */ }
               }
               new Notice(`Downloaded: ${file.name}`);
@@ -315,7 +315,7 @@ export default class ObsyncPlugin extends Plugin {
     if (this.settings.verboseLog) console.log(...args);
   }
 
-  private makeUploadProgressCb(fileName: string) {
+  private makeUploadProgressCb(_fileName: string) {
     return (p: { fileName: string; chunk: number; totalChunks: number; speed: string; pct: string }) => {
       const speedPart = p.speed ? ` · ${p.speed}` : '';
       const pctPart = p.pct ? ` ${p.pct}%` : '';
@@ -621,7 +621,7 @@ export default class ObsyncPlugin extends Plugin {
       this._origShellOpenPath = mod.shell.openPath.bind(mod.shell);
       mod.shell.openPath = async (filePath: string): Promise<string> => {
         if (this.settings.onDemand) {
-          const vaultBase = String(this.app.vault.adapter.getFullPath('/')); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API; needed to resolve vault base path
+          const vaultBase = String(this.app.vault.adapter.getFullPath('/'));
           const relPath = filePath.startsWith(vaultBase)
             ? filePath.slice(vaultBase.length).replace(/^\//, '')
             : null;
@@ -1026,7 +1026,7 @@ export default class ObsyncPlugin extends Plugin {
             remotePath,
             (p) => this.setStatus(`Pulling: ${shortName} (${p.pct}% · ${p.speed} · chunk ${p.chunk}/${p.totalChunks})`)
           );
-          let newEtag = newEtagSrc;
+          const newEtag = newEtagSrc;
           await this.yieldToUI();
           const decrypted = await this.cryptoManager.decryptBytes(encData);
           await this.yieldToUI();
