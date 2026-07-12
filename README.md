@@ -1,14 +1,14 @@
 # WebDAV PQC Sync
 
-> **⚠️ v2.0.0 BREAKING CHANGE — 不向后兼容 / Not backward compatible**
+> **⚠️ v2.0.0 BREAKING CHANGE — Not backward compatible**
 >
-> v2.0.0 将加密方案从 **RSA 4096 (OpenPGP)** 切换到 **ML-KEM-768 (NIST FIPS 203 后量子加密)**。
+> v2.0.0 switches encryption from **RSA 4096 (OpenPGP)** to **ML-KEM-768 (NIST FIPS 203 post-quantum)**.
 >
-> **旧的 GPG 密钥、passphrase 和已加密的远程数据全部作废。** 更新后必须：
-> 1. 在设置中重新生成密钥对（无需 passphrase）
-> 2. 删除远程 WebDAV 上的旧加密数据（或清空目录重新开始）
+> **Old GPG keys, passphrase, and all previously encrypted remote data are INVALIDATED.** After upgrading you must:
+> 1. Generate a new key pair in settings (no passphrase required)
+> 2. Delete old encrypted data on your WebDAV server (or start with an empty directory)
 >
-> 密钥格式从 OpenPGP armor 改为 base64，设置项 `privateKey` 重命名为 `secretKey`。
+> Key format changed from OpenPGP armor to base64. Settings field `privateKey` renamed to `secretKey`.
 
 **File content + filenames — both encrypted. The server sees only random garbage. AES-256-GCM + ML-KEM-768 post-quantum, end-to-end encrypted sync to any WebDAV.**
 
