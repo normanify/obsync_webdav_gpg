@@ -32,6 +32,8 @@ function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+// @noble/post-quantum uses complex generics (TRet/TArg) that eslint cannot resolve
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
 function kyberKeygen(): { publicKey: Uint8Array<ArrayBuffer>; secretKey: Uint8Array<ArrayBuffer> } {
   const k = ml_kem768.keygen();
   return { publicKey: toBytes(k.publicKey), secretKey: toBytes(k.secretKey) };
@@ -45,6 +47,7 @@ function kyberEncapsulate(pk: Uint8Array<ArrayBuffer>): { cipherText: Uint8Array
 function kyberDecapsulate(ct: Uint8Array<ArrayBuffer>, sk: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
   return toBytes(ml_kem768.decapsulate(ct, sk));
 }
+/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
 
 export class CryptoManager {
   private publicKey: Uint8Array<ArrayBuffer> | null = null;
@@ -69,7 +72,7 @@ export class CryptoManager {
 
   async loadPublicKey(b64: string): Promise<void> {
     this.publicKey = base64ToBytes(b64);
-    const hash = await crypto.subtle.digest('SHA-256', this.publicKey!);
+    const hash = await crypto.subtle.digest('SHA-256', this.publicKey);
     this.fingerprint = Array.from(new Uint8Array(hash))
       .map(b => b.toString(16).padStart(2, '0')).join('');
   }
