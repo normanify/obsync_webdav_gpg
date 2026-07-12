@@ -1,4 +1,8 @@
 {
+  "2.0.6": {
+    "minAppVersion": "1.6.6",
+    "description": "Rename plugin from WebDAV GPG Sync to Webdav PQC Sync"
+  },
   "2.0.5": {
     "minAppVersion": "1.6.6",
     "description": "Add inline -- description to all eslint-disable/enable directives to satisfy eslint-comments/require-description"

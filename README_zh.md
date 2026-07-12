@@ -1,4 +1,4 @@
-# WebDAV GPG Sync
+# Webdav PQC Sync
 
 > [English README](README.md)
 
