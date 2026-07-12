@@ -1,17 +1,28 @@
-# WebDAV GPG Sync
+# WebDAV PQC Sync
 
-**File content + filenames — both encrypted. The server sees only random garbage. AES-256-GCM + RSA 4096, end-to-end encrypted sync to any WebDAV.**
+> **⚠️ v2.0.0 BREAKING CHANGE — 不向后兼容 / Not backward compatible**
+>
+> v2.0.0 将加密方案从 **RSA 4096 (OpenPGP)** 切换到 **ML-KEM-768 (NIST FIPS 203 后量子加密)**。
+>
+> **旧的 GPG 密钥、passphrase 和已加密的远程数据全部作废。** 更新后必须：
+> 1. 在设置中重新生成密钥对（无需 passphrase）
+> 2. 删除远程 WebDAV 上的旧加密数据（或清空目录重新开始）
+>
+> 密钥格式从 OpenPGP armor 改为 base64，设置项 `privateKey` 重命名为 `secretKey`。
+
+**File content + filenames — both encrypted. The server sees only random garbage. AES-256-GCM + ML-KEM-768 post-quantum, end-to-end encrypted sync to any WebDAV.**
 
 ## Key Features
 
 ### 🔒 Full Encryption, Zero Trust for Cloud
 
-Most sync solutions (Obsidian Sync, iCloud, Dropbox, etc.) rely on cloud-side trust — the provider **can** read your data. **WebDAV GPG Sync uses end-to-end encryption.** All encryption happens locally; only ciphertext is sent to WebDAV:
+Most sync solutions (Obsidian Sync, iCloud, Dropbox, etc.) rely on cloud-side trust — the provider **can** read your data. **WebDAV PQC Sync uses end-to-end encryption.** All encryption happens locally; only ciphertext is sent to WebDAV:
 
 - **✅ Filenames are encrypted too** — Not just file content: **every folder and file name** is independently encrypted with AES-256-GCM and Base64URL-encoded. The server sees only random strings and has no idea what files you're editing
-- **File content encryption** — **OpenPGP RSA 4096-bit** public key encryption, each file stored as binary ciphertext
+- **File content encryption** — **ML-KEM-768 (FIPS 203)** key encapsulation + **AES-256-GCM** bulk encryption. The 32-byte shared secret from ML-KEM directly keys AES-256-GCM. Hardware-accelerated via Web Crypto API
+- **Post-quantum secure** — ML-KEM-768 is the NIST-standardized replacement for RSA/ECC, resistant to Shor's algorithm attacks from quantum computers
 - **Directory structure hidden** — The full folder hierarchy is mapped to an equal-depth encrypted path. The cloud cannot reconstruct your folder layout
-- **Private key never uploaded** — Your private key stays in local Obsidian config. Only the public key is needed to encrypt uploads
+- **Secret key never uploaded** — Your secret key stays in local Obsidian config. Only the public key is needed to encrypt uploads
 
 **Result: The WebDAV provider, network intermediaries, and anyone with server access see only encrypted binary blobs with random filenames. Zero content, zero titles, zero structure.**
 
@@ -26,7 +37,7 @@ Most sync solutions (Obsidian Sync, iCloud, Dropbox, etc.) rely on cloud-side tr
 
 | Action | Description |
 |--------|-------------|
-| **Generate Key Pair** | One-click RSA 4096-bit GPG key generation |
+| **Generate Key Pair** | One-click ML-KEM-768 post-quantum key generation (no passphrase needed) |
 | **Sync to WebDAV** | Push local changes (encrypted) to WebDAV, pull remote changes |
 | **Restore from WebDAV** | On a new device, download and decrypt everything from WebDAV to rebuild your vault |
 | **Auto Sync** | Automatically sync on file save (3-second debounce) |
@@ -34,14 +45,18 @@ Most sync solutions (Obsidian Sync, iCloud, Dropbox, etc.) rely on cloud-side tr
 
 ### 🛡️ Security Design
 
-| Layer | Scheme |
-|-------|--------|
-| File content encryption | OpenPGP (RSA 4096-bit) |
-| Filename encryption | AES-256-GCM (key derived from GPG fingerprint + PBKDF2) |
-| Random IV | Unique IV per file and per path segment |
-| Encryption location | All client-side, in-browser |
-| Private key storage | Local Obsidian config only |
-| Config export/import | Full config export (keys, credentials) for easy migration |
+| Layer | v1.x (old) | v2.0+ (current) |
+|-------|-----------|------------------|
+| Key encapsulation | RSA 4096 (OpenPGP) | **ML-KEM-768 (NIST FIPS 203)** — quantum-resistant |
+| Bulk encryption | AES-256-GCM | AES-256-GCM (unchanged) |
+| Filename encryption | AES-256-GCM (key from GPG fingerprint) | AES-256-GCM (key from SHA-256 of Kyber public key) |
+| Key derivation | PBKDF2 100k iterations | PBKDF2 100k iterations (unchanged) |
+| Key format | OpenPGP armored (ASCII) | **Base64-encoded raw bytes** |
+| Passphrase | Required (encrypted private key) | **Removed** (keys are raw, no encryption at rest) |
+| Encryption overhead | 536 bytes per file | 1108 bytes per file (+572 bytes) |
+| Private key → Public key | Derivable from private key | **Must store both** (Kyber cannot derive public from secret) |
+| Quantum resistant | ❌ No (RSA broken by Shor's algorithm) | **✅ Yes** |
+| Bundle size | ~600 KB (OpenPGP.js) | **~72 KB** (@noble/post-quantum) |
 
 ### ⚙️ WebDAV Compatibility
 
@@ -69,9 +84,8 @@ Files **over 90MB** (configurable in Advanced settings) are automatically split 
 
 1. Install the plugin
 2. Fill in WebDAV URL, username, and password in settings
-3. Set a GPG passphrase
-4. Click **Generate Key Pair** to create your keys
-5. Click **Sync Now** to start encrypted sync
+3. Click **Generate Key Pair** to create your ML-KEM-768 keys
+4. Click **Sync Now** to start encrypted sync
 
 > **Migrating to a new device**: Export the config (including keys) from the old device, import it on the new one, then use **Restore from WebDAV**.
 
@@ -81,4 +95,4 @@ Defaults to `.obsidian/plugins/` and `.trash/`. Add more comma-separated path pr
 
 ---
 
-**Obsync WebDAV GPG** gives you the convenience of WebDAV and self-hosted storage with the privacy of end-to-end encryption. **Your notes. Your eyes only.**
+**Obsync WebDAV GPG/PQC Sync** gives you the convenience of WebDAV and self-hosted storage with the privacy of end-to-end post-quantum encryption. **Your notes. Your eyes only.**
