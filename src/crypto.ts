@@ -32,6 +32,8 @@ function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+// @noble/post-quantum uses complex generics (TRet/TArg) that older @typescript-eslint cannot resolve
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
 function kyberKeygen(): { publicKey: Uint8Array<ArrayBuffer>; secretKey: Uint8Array<ArrayBuffer> } {
   const k = ml_kem768.keygen();
   return { publicKey: toBytes(k.publicKey), secretKey: toBytes(k.secretKey) };
@@ -45,6 +47,7 @@ function kyberEncapsulate(pk: Uint8Array<ArrayBuffer>): { cipherText: Uint8Array
 function kyberDecapsulate(ct: Uint8Array<ArrayBuffer>, sk: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
   return toBytes(ml_kem768.decapsulate(ct, sk));
 }
+/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
 
 export class CryptoManager {
   private publicKey: Uint8Array<ArrayBuffer> | null = null;
@@ -59,7 +62,7 @@ export class CryptoManager {
     return this.secretKey !== null;
   }
 
-  async generateKeyPair(): Promise<{ publicKey: string; secretKey: string }> {
+  generateKeyPair(): Promise<{ publicKey: string; secretKey: string }> {
     const keys = kyberKeygen();
     return {
       publicKey: bytesToBase64(keys.publicKey),
@@ -74,7 +77,7 @@ export class CryptoManager {
       .map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
-  async loadSecretKey(b64: string): Promise<void> {
+  loadSecretKey(b64: string): Promise<void> {
     this.secretKey = base64ToBytes(b64);
   }
 

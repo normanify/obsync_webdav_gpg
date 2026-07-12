@@ -180,7 +180,7 @@ export default class ObsyncPlugin extends Plugin {
           // Open with default system app
           leaf.detach();
           try {
-            const shellPath = String(this.app.vault.adapter.getFullPath(file.path));
+            const shellPath = String(this.app.vault.adapter.getFullPath(file.path)); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API
             void openFileWithDefaultApp(shellPath);
           } catch (e) {
             console.error('[on-demand] openWithDefaultApp failed:', e);
@@ -211,7 +211,7 @@ export default class ObsyncPlugin extends Plugin {
                 if (leaf) leaf.openFile(file).catch(e => console.error('[on-demand] openFile failed:', e));
               } else {
                 try {
-                  void openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path)));
+                  void openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path))); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API
                 } catch { /* ignore */ }
               }
               new Notice(`Downloaded: ${file.name}`);
@@ -621,7 +621,7 @@ export default class ObsyncPlugin extends Plugin {
       this._origShellOpenPath = mod.shell.openPath.bind(mod.shell);
       mod.shell.openPath = async (filePath: string): Promise<string> => {
         if (this.settings.onDemand) {
-          const vaultBase = String(this.app.vault.adapter.getFullPath('/'));
+          const vaultBase = String(this.app.vault.adapter.getFullPath('/')); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API
           const relPath = filePath.startsWith(vaultBase)
             ? filePath.slice(vaultBase.length).replace(/^\//, '')
             : null;
