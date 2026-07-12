@@ -32,8 +32,7 @@ function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-// @noble/post-quantum uses complex generics (TRet/TArg) that older @typescript-eslint cannot resolve
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument -- @noble/post-quantum uses complex generics (TRet/TArg) that older @typescript-eslint cannot resolve */
 function kyberKeygen(): { publicKey: Uint8Array<ArrayBuffer>; secretKey: Uint8Array<ArrayBuffer> } {
   const k = ml_kem768.keygen();
   return { publicKey: toBytes(k.publicKey), secretKey: toBytes(k.secretKey) };
@@ -47,7 +46,7 @@ function kyberEncapsulate(pk: Uint8Array<ArrayBuffer>): { cipherText: Uint8Array
 function kyberDecapsulate(ct: Uint8Array<ArrayBuffer>, sk: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
   return toBytes(ml_kem768.decapsulate(ct, sk));
 }
-/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
+/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument -- @noble/post-quantum uses complex generics (TRet/TArg) that older @typescript-eslint cannot resolve */
 
 export class CryptoManager {
   private publicKey: Uint8Array<ArrayBuffer> | null = null;

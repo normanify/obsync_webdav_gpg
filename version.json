@@ -1,4 +1,8 @@
 {
+  "2.0.5": {
+    "minAppVersion": "1.6.6",
+    "description": "Add inline -- description to all eslint-disable/enable directives to satisfy eslint-comments/require-description"
+  },
   "2.0.4": {
     "minAppVersion": "1.6.6",
     "description": "Suppress all no-unsafe-* eslint warnings for kyber, Node.js http, Obsidian API, and process.env; fix require-await; switch to recommendedTypeChecked"

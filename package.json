@@ -1,6 +1,6 @@
 {
   "name": "obsync-webdav-gpg",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "Obsidian plugin for post-quantum encrypted WebDAV sync",
   "main": "main.js",
   "scripts": {
