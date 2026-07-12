@@ -12,7 +12,28 @@
 >
 > 密钥格式从 OpenPGP armor 改为 base64。设置项 `privateKey` 重命名为 `secretKey`。
 
-**文件内容 + 文件名均加密。服务端只能看到随机数据。AES-256-GCM + ML-KEM-768 后量子端到端加密，支持任意 WebDAV。**
+**文件内容 + 文件名均加密。服务端只能看到随机数据。ML-KEM-768 (FIPS 203) 后量子密钥封装 + AES-256-GCM，端到端加密同步到任意 WebDAV。**
+
+## 🔬 后量子加密 (ML-KEM-768)
+
+本插件采用 **ML-KEM-768**（曾用名 Kyber-768），即 **NIST FIPS 203** 后量子密钥封装标准 —— RSA/ECC 的官方替代方案：
+
+- **抗量子** — Shor 算法可以破解 RSA/ECC，但对 ML-KEM 无效
+- **NIST 一级安全** — 等效于 AES-128，经 NIST 多年密码分析后选定
+- **1088 字节密文** — 每个文件的 AES-256-GCM 密钥都通过独立的 ML-KEM 封装保护
+- **纯 JS** — 使用 `@noble/post-quantum`（~72 KB），无需 WASM 或原生依赖
+
+### 工作原理
+
+```
+你的文件 → AES-256-GCM encrypt(随机密钥) → 密文
+                                     ↑
+                              ML-KEM-768.encapsulate(公钥)
+                                     ↑
+                              服务端看到:  [OBSYNC-K | 1088B CT | 12B IV | AES-GCM 密文]
+```
+
+**私钥永不离开设备** —— 上传加密仅需公钥。每文件额外开销 1108 字节（ML-KEM 密文 + AES-IV），服务端只能看到随机二进制数据。
 
 ## 核心特性
 

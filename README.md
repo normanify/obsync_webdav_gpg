@@ -12,7 +12,28 @@
 >
 > Key format changed from OpenPGP armor to base64. Settings field `privateKey` renamed to `secretKey`.
 
-**File content + filenames — both encrypted. The server sees only random garbage. AES-256-GCM + ML-KEM-768 post-quantum, end-to-end encrypted sync to any WebDAV.**
+**File content + filenames — both encrypted. The server sees only random garbage. ML-KEM-768 (FIPS 203) post-quantum key encapsulation + AES-256-GCM, end-to-end encrypted sync to any WebDAV.**
+
+## 🔬 Post-Quantum Encryption (ML-KEM-768)
+
+This plugin uses **ML-KEM-768** (formerly Kyber-768), the **NIST FIPS 203** standard for post-quantum key encapsulation — the official replacement for RSA and ECC:
+
+- **Quantum-resistant** — immune to Shor's algorithm, which breaks RSA/ECC once large-scale quantum computers arrive
+- **NIST Level 1 security** — equivalent to AES-128, chosen by NIST after years of cryptanalysis
+- **1088-byte ciphertext** — each file's AES-256-GCM key is wrapped in a fresh ML-KEM encapsulation
+- **Pure JS** — using `@noble/post-quantum` (~72 KB), no WASM, no native dependencies
+
+### How it works
+
+```
+Your file → AES-256-GCM encrypt(random key) → ciphertext
+                                       ↑
+                                ML-KEM-768.encapsulate(public key)
+                                       ↑
+                                Server's view:  [OBSYNC-K | 1088B CT | 12B IV | AES-GCM ciphertext]
+```
+
+Your **secret key never leaves the device** — only the public key is needed to encrypt. The server stores 1108 bytes of overhead per file (ML-KEM ciphertext + AES-IV), seeing only random binary.
 
 ## Key Features
 
