@@ -6,7 +6,7 @@
 >
 > v2.0.0 switches encryption from **RSA 4096 (OpenPGP)** to **ML-KEM-768 (NIST FIPS 203 post-quantum)**.
 >
-> **Old PGP keys, passphrase, and all previously encrypted remote data are INVALIDATED.** After upgrading you must:
+> **Old keys, passphrase, and all previously encrypted remote data are INVALIDATED.** After upgrading you must:
 > 1. Generate a new key pair in settings (no passphrase required)
 > 2. Delete old encrypted data on your WebDAV server (or start with an empty directory)
 >
