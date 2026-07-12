@@ -6,7 +6,7 @@
 >
 > v2.0.0 switches encryption from **RSA 4096 (OpenPGP)** to **ML-KEM-768 (NIST FIPS 203 post-quantum)**.
 >
-> **Old GPG keys, passphrase, and all previously encrypted remote data are INVALIDATED.** After upgrading you must:
+> **Old PGP keys, passphrase, and all previously encrypted remote data are INVALIDATED.** After upgrading you must:
 > 1. Generate a new key pair in settings (no passphrase required)
 > 2. Delete old encrypted data on your WebDAV server (or start with an empty directory)
 >
@@ -51,7 +51,7 @@ Most sync solutions (Obsidian Sync, iCloud, Dropbox, etc.) rely on cloud-side tr
 |-------|-----------|------------------|
 | Key encapsulation | RSA 4096 (OpenPGP) | **ML-KEM-768 (NIST FIPS 203)** — quantum-resistant |
 | Bulk encryption | AES-256-GCM | AES-256-GCM (unchanged) |
-| Filename encryption | AES-256-GCM (key from GPG fingerprint) | AES-256-GCM (key from SHA-256 of Kyber public key) |
+| Filename encryption | AES-256-GCM (key from PGP fingerprint) | AES-256-GCM (key from SHA-256 of Kyber public key) |
 | Key derivation | PBKDF2 100k iterations | PBKDF2 100k iterations (unchanged) |
 | Key format | OpenPGP armored (ASCII) | **Base64-encoded raw bytes** |
 | Passphrase | Required (encrypted private key) | **Removed** (keys are raw, no encryption at rest) |
@@ -97,4 +97,4 @@ Defaults to `.obsidian/plugins/` and `.trash/`. Add more comma-separated path pr
 
 ---
 
-**Obsync WebDAV GPG/PQC Sync** gives you the convenience of WebDAV and self-hosted storage with the privacy of end-to-end post-quantum encryption. **Your notes. Your eyes only.**
+**Obsync Webdav PQC Sync** gives you the convenience of WebDAV and self-hosted storage with the privacy of end-to-end post-quantum encryption. **Your notes. Your eyes only.**

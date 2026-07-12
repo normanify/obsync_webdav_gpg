@@ -1,4 +1,8 @@
 {
+  "2.0.7": {
+    "minAppVersion": "1.6.6",
+    "description": "Replace all remaining GPG references with PQC across project files"
+  },
   "2.0.6": {
     "minAppVersion": "1.6.6",
     "description": "Rename plugin from WebDAV GPG Sync to Webdav PQC Sync"
