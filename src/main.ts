@@ -919,13 +919,21 @@ export default class ObsyncPlugin extends Plugin {
         remotePathToVault.set(entry.remotePath, vp);
       }
 
-      /* Download remote manifest for SHA-based download skip */
+      /* Download remote manifest for SHA-based download skip and segment cache */
       const remoteShaByVaultPath = new Map<string, string>();
       try {
         const rm = await this.downloadManifestFromRemote();
         if (rm) {
           for (const [vp, e] of Object.entries(rm.files || {})) {
             if (e.localSha256) remoteShaByVaultPath.set(vp, e.localSha256);
+          }
+          if (rm.segmentCache) {
+            for (const [enc, plain] of Object.entries(rm.segmentCache)) {
+              if (!this.syncManifest.segmentCache[enc]) {
+                this.syncManifest.segmentCache[enc] = plain;
+              }
+            }
+            this.buildSegmentMaps();
           }
         }
       } catch (e) {
