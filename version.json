@@ -1,4 +1,8 @@
 {
+  "2.0.1": {
+    "minAppVersion": "1.6.6",
+    "description": "Fix TypeScript 5.9 type errors in crypto.ts — use explicit Uint8Array<ArrayBuffer> to match BufferSource"
+  },
   "2.0.0": {
     "minAppVersion": "1.6.6",
     "description": "Switch from RSA 4096 (OpenPGP) to ML-KEM-768 post-quantum encryption. Breaking: removes passphrase, renames privateKey to secretKey, uses base64 key format. Old encrypted data cannot be decrypted with new keys."

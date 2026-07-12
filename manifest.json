@@ -1,7 +1,7 @@
 {
   "id": "obsync-webdav-gpg",
   "name": "WebDAV GPG Sync",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "minAppVersion": "1.6.6",
   "description": "Post-quantum encrypted (ML-KEM-768 + AES-256-GCM) bidirectional sync with any WebDAV server. Encrypts both file content and filenames.",
   "author": "obsync",
