@@ -1,4 +1,8 @@
 {
+  "2.0.2": {
+    "minAppVersion": "1.6.6",
+    "description": "Fix eslint warnings: remove unnecessary non-null assertion, suppress no-unsafe-* for ml_kem768 calls, cleanup sync.ts and main.ts"
+  },
   "2.0.1": {
     "minAppVersion": "1.6.6",
     "description": "Fix TypeScript 5.9 type errors in crypto.ts — use explicit Uint8Array<ArrayBuffer> to match BufferSource"
