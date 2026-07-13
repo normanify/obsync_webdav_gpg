@@ -91,6 +91,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
               this.plugin.settings.webdavUsername,
               this.plugin.settings.webdavPassword,
               this.plugin.settings.allowSelfSignedCerts,
+              this.plugin.settings.chunkSizeMb,
+              (this.plugin as { isMobile?: boolean }).isMobile ?? false,
             );
             await this.plugin.syncClient.testConnection();
             new Notice('WebDAV connection successful');
@@ -222,7 +224,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Download on Demand')
-      .setDesc('Only download file names during sync; actual file content is downloaded when you open a file. Useful for large vaults or slow connections.')
+      .setDesc('Only download file names during sync; actual file content is downloaded when you open a file. Useful for large vaults or slow connections. On mobile, only natively viewable file types (Markdown, images, audio, video, PDF) are supported — external app opening is not available.')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.onDemand)
         .onChange(async value => {

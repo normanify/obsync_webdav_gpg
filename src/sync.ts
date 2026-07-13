@@ -45,6 +45,7 @@ export class WebDAVSync {
   private username: string;
   private password: string;
   private allowSelfSigned: boolean;
+  private isMobile: boolean;
   private chunkSizeMb: number = 90;
 
   private static readonly CHUNK_DOWNLOAD_SIZE = 10 * 1024 * 1024; // 10 MB per parallel chunk
@@ -62,20 +63,22 @@ export class WebDAVSync {
   </d:prop>
 </d:propfind>`;
 
-  constructor(url: string, username: string, password: string, allowSelfSigned = false, chunkSizeMb = 90) {
+  constructor(url: string, username: string, password: string, allowSelfSigned = false, chunkSizeMb = 90, isMobile = false) {
     this.url = url.replace(/\/?$/, '/');
     this.username = username;
     this.password = password;
     this.allowSelfSigned = allowSelfSigned;
     this.chunkSizeMb = chunkSizeMb;
+    this.isMobile = isMobile;
   }
 
-  updateConfig(url: string, username: string, password: string, allowSelfSigned?: boolean, chunkSizeMb?: number): void {
+  updateConfig(url: string, username: string, password: string, allowSelfSigned?: boolean, chunkSizeMb?: number, isMobile?: boolean): void {
     this.url = url.replace(/\/?$/, '/');
     this.username = username;
     this.password = password;
     if (allowSelfSigned !== undefined) this.allowSelfSigned = allowSelfSigned;
     if (chunkSizeMb !== undefined) this.chunkSizeMb = chunkSizeMb;
+    if (isMobile !== undefined) this.isMobile = isMobile;
   }
 
   private getAuthHeader(): string {
@@ -93,7 +96,7 @@ export class WebDAVSync {
   }
 
   private async makeRequest(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
-    if (!this.allowSelfSigned) return this.makeRequestViaObsidian(method, fullUrl, headers, body, timeoutMs);
+    if (!this.allowSelfSigned || this.isMobile) return this.makeRequestViaObsidian(method, fullUrl, headers, body, timeoutMs);
 
     const rejectUnauthorized = false;
     let lastErr: Error | undefined;

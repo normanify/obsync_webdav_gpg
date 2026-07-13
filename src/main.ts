@@ -70,7 +70,8 @@ async function getElectronModule(): Promise<{ shell: ElectronShell } | undefined
   }
 }
 
-async function openFileWithDefaultApp(fullPath: string): Promise<void> {
+async function openFileWithDefaultApp(fullPath: string, isMobile = false): Promise<void> {
+  if (isMobile) return;
   const mod = await getElectronModule();
   void mod?.shell.openPath(fullPath);
 }
@@ -88,6 +89,7 @@ export default class ObsyncPlugin extends Plugin {
   syncClient: WebDAVSync;
   settingsTab: ObsyncSettingTab;
 
+  private isMobile: boolean;
   private autoSyncTimer: number | null = null;
   private isSyncing = false;
   private pluginDir = '';
@@ -106,6 +108,7 @@ export default class ObsyncPlugin extends Plugin {
   private _handlingFileOpen = new Set<string>();
 
   async onload(): Promise<void> {
+    this.isMobile = (this.app as { isMobile?: boolean }).isMobile ?? false;
     this.detectPluginDir();
     await this.loadSettings();
     await this.loadManifest();
@@ -117,6 +120,7 @@ export default class ObsyncPlugin extends Plugin {
       this.settings.webdavPassword,
       this.settings.allowSelfSignedCerts,
       this.settings.chunkSizeMb,
+      this.isMobile,
     );
 
     await this.loadKeys();
@@ -178,6 +182,10 @@ export default class ObsyncPlugin extends Plugin {
           leaf.openFile(this.app.vault.getFileByPath(file.path) || file).catch(e => console.error('[on-demand] openFile failed:', e));
         } else {
           // Open with default system app
+          if (this.isMobile) {
+            new Notice('Cannot open this file type on mobile');
+            return;
+          }
           leaf.detach();
           try {
             const shellPath = String(this.app.vault.adapter.getFullPath(file.path)); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API
@@ -210,6 +218,10 @@ export default class ObsyncPlugin extends Plugin {
                 const leaf = this.app.workspace.getLeaf(false);
                 if (leaf) leaf.openFile(file).catch(e => console.error('[on-demand] openFile failed:', e));
               } else {
+                if (this.isMobile) {
+                  new Notice('Cannot open this file type on mobile');
+                  return;
+                }
                 try {
                   void openFileWithDefaultApp(String(this.app.vault.adapter.getFullPath(file.path))); // eslint-disable-line @typescript-eslint/no-unsafe-call -- adapter.getFullPath is untyped in Obsidian API
                 } catch { /* ignore */ }
@@ -749,6 +761,7 @@ export default class ObsyncPlugin extends Plugin {
         this.settings.webdavPassword,
         this.settings.allowSelfSignedCerts,
         this.settings.chunkSizeMb,
+        this.isMobile,
       );
 
       await this.syncClient.testConnection();
@@ -1279,6 +1292,7 @@ export default class ObsyncPlugin extends Plugin {
         this.settings.webdavPassword,
         this.settings.allowSelfSignedCerts,
         this.settings.chunkSizeMb,
+        this.isMobile,
       );
 
       new Notice('Restoring...');
@@ -1403,7 +1417,7 @@ export default class ObsyncPlugin extends Plugin {
       this.journal.record('file_updated', file.path);
       this.scheduleAutoSync(file);
     }));
-        this.syncClient.updateConfig(this.settings.webdavUrl, this.settings.webdavUsername, this.settings.webdavPassword, this.settings.allowSelfSignedCerts, this.settings.chunkSizeMb);
+        this.syncClient.updateConfig(this.settings.webdavUrl, this.settings.webdavUsername, this.settings.webdavPassword, this.settings.allowSelfSignedCerts, this.settings.chunkSizeMb, this.isMobile);
         new Notice('Config imported successfully');
         this.settingsTab?.display();
       } catch (e) {

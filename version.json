@@ -1,4 +1,8 @@
 {
+  "2.0.9": {
+    "minAppVersion": "1.6.6",
+    "description": "iOS/Android mobile support: detect isMobile, skip Electron shell/openPath, skip Node.js http/https path, add mobile notice for non-native files on download-on-demand"
+  },
   "2.0.8": {
     "minAppVersion": "1.6.6",
     "description": "Add dedicated Post-Quantum Encryption (ML-KEM-768) section to README; revert manifest id for Obsidian continuity"
