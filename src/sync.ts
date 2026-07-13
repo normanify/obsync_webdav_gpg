@@ -1,6 +1,5 @@
 import { requestUrl } from 'obsidian';
-import https from 'https';
-import http from 'http';
+import type http from 'http';
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -149,8 +148,11 @@ export class WebDAVSync {
     return { status: response.status, headers: headersLower, arrayBuffer: response.arrayBuffer, text: response.text };
   }
 
+  // Dynamic import avoids bundling Node.js built-ins on mobile; only invoked on desktop
   /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument -- Node.js http/https types not resolvable by eslint when moduleResolution:bundler */
   private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000, rejectUnauthorized = false): Promise<RequestResult> {
+    const httpsMod = await import('https');
+    const httpMod = await import('http');
     return new Promise<RequestResult>((resolve, reject) => {
       const urlObj = new URL(fullUrl);
       const isHttps = urlObj.protocol === 'https:';
@@ -191,9 +193,9 @@ export class WebDAVSync {
 
       let req: http.ClientRequest;
       if (isHttps) {
-        req = https.request({ ...opts, rejectUnauthorized, agent: new https.Agent({ rejectUnauthorized }) }, onResponse);
+        req = httpsMod.request({ ...opts, rejectUnauthorized, agent: new httpsMod.Agent({ rejectUnauthorized }) }, onResponse);
       } else {
-        req = http.request(opts, onResponse);
+        req = httpMod.request(opts, onResponse);
       }
       req.on('error', onError);
       req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
