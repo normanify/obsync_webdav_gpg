@@ -243,7 +243,7 @@ export default class ObsyncPlugin extends Plugin {
     this.app.vault.readBinary = this._interceptVaultReadBinary.bind(this);
 
     // Override Electron shell.openPath to hydrate before opening with default system app
-    await this._patchShellOpenPath();
+    if (!this.isMobile) await this._patchShellOpenPath();
 
     this.settingsTab = new ObsyncSettingTab(this.app, this);
     this.addSettingTab(this.settingsTab);
@@ -293,7 +293,7 @@ export default class ObsyncPlugin extends Plugin {
       this.app.vault.readBinary = this._origVaultReadBinary;
       this._origVaultReadBinary = null;
     }
-    if (this._origShellOpenPath) {
+    if (!this.isMobile && this._origShellOpenPath) {
       void (async () => {
         try {
           const mod = await getElectronModule();
@@ -1403,24 +1403,7 @@ export default class ObsyncPlugin extends Plugin {
         Object.assign(this.settings, merged);
         await this.saveSettings();
         this.cryptoManager = new CryptoManager();
-    await this.loadKeys();
-
-    this.registerEvent(this.app.vault.on('delete', (file: TAbstractFile) => {
-      if (this.isSyncing) return;
-      if (this.isExcluded(file.path)) return;
-      if (file instanceof TFolder) {
-        this.journal.record('dir_deleted', file.path);
-      } else if (file instanceof TFile) {
-        this.journal.record('file_deleted', file.path);
-      }
-    }));
-
-    this.registerEvent(this.app.vault.on('modify', (file: TFile) => {
-      if (this.isSyncing) return;
-      if (this.isExcluded(file.path)) return;
-      this.journal.record('file_updated', file.path);
-      this.scheduleAutoSync(file);
-    }));
+        await this.loadKeys();
         this.syncClient.updateConfig(this.settings.webdavUrl, this.settings.webdavUsername, this.settings.webdavPassword, this.settings.allowSelfSignedCerts, this.settings.chunkSizeMb, this.isMobile);
         new Notice('Config imported successfully');
         this.settingsTab?.display();
