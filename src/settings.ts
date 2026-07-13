@@ -103,13 +103,17 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Allow Self-Signed Certificates')
-      .setDesc('Disable TLS certificate verification (for WebDAV servers with self-signed certificates). Warning: reduces connection security.')
+      .setDesc((this.plugin as { isMobile?: boolean }).isMobile ? 'Not available on mobile' : 'Disable TLS certificate verification (for WebDAV servers with self-signed certificates). Warning: reduces connection security.')
       .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.allowSelfSignedCerts)
+        .setValue((this.plugin as { isMobile?: boolean }).isMobile ? false : this.plugin.settings.allowSelfSignedCerts)
+        .setDisabled((this.plugin as { isMobile?: boolean }).isMobile ?? false)
         .onChange(async value => {
           this.plugin.settings.allowSelfSignedCerts = value;
           await this.plugin.saveSettings();
         }));
+    if ((this.plugin as { isMobile?: boolean }).isMobile && this.plugin.settings.allowSelfSignedCerts) {
+      this.plugin.settings.allowSelfSignedCerts = false;
+    }
 
     new Setting(containerEl).setName('Post-Quantum Keys').setHeading();
 

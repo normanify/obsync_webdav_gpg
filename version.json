@@ -1,4 +1,8 @@
 {
+  "2.0.10": {
+    "minAppVersion": "1.6.6",
+    "description": "Disable self-signed certs on mobile (Node.js rejectUnauthorized unavailable); force setting to false on load"
+  },
   "2.0.9": {
     "minAppVersion": "1.6.6",
     "description": "iOS/Android mobile support: detect isMobile, skip Electron shell/openPath, skip Node.js http/https path, add mobile notice for non-native files on download-on-demand"

@@ -1,6 +1,6 @@
 {
   "name": "obsync-webdav-pqc",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "description": "Post-quantum encrypted WebDAV sync plugin for Obsidian",
   "main": "main.js",
   "scripts": {

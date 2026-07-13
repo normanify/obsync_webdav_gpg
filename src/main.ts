@@ -112,6 +112,10 @@ export default class ObsyncPlugin extends Plugin {
     this.detectPluginDir();
     await this.loadSettings();
     await this.loadManifest();
+    if (this.isMobile && this.settings.allowSelfSignedCerts) {
+      this.settings.allowSelfSignedCerts = false;
+      await this.saveSettings();
+    }
 
     this.cryptoManager = new CryptoManager();
     this.syncClient = new WebDAVSync(
