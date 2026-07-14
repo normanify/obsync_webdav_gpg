@@ -1,5 +1,4 @@
 import { requestUrl } from 'obsidian';
-import type http from 'http';
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -43,8 +42,6 @@ export class WebDAVSync {
   private url: string;
   private username: string;
   private password: string;
-  private allowSelfSigned: boolean;
-  private isMobile: boolean;
   private chunkSizeMb: number = 90;
 
   private static readonly CHUNK_DOWNLOAD_SIZE = 10 * 1024 * 1024; // 10 MB per parallel chunk
@@ -62,22 +59,18 @@ export class WebDAVSync {
   </d:prop>
 </d:propfind>`;
 
-  constructor(url: string, username: string, password: string, allowSelfSigned = false, chunkSizeMb = 90, isMobile = false) {
+  constructor(url: string, username: string, password: string, chunkSizeMb = 90) {
     this.url = url.replace(/\/?$/, '/');
     this.username = username;
     this.password = password;
-    this.allowSelfSigned = allowSelfSigned;
     this.chunkSizeMb = chunkSizeMb;
-    this.isMobile = isMobile;
   }
 
-  updateConfig(url: string, username: string, password: string, allowSelfSigned?: boolean, chunkSizeMb?: number, isMobile?: boolean): void {
+  updateConfig(url: string, username: string, password: string, chunkSizeMb?: number): void {
     this.url = url.replace(/\/?$/, '/');
     this.username = username;
     this.password = password;
-    if (allowSelfSigned !== undefined) this.allowSelfSigned = allowSelfSigned;
     if (chunkSizeMb !== undefined) this.chunkSizeMb = chunkSizeMb;
-    if (isMobile !== undefined) this.isMobile = isMobile;
   }
 
   private getAuthHeader(): string {
@@ -95,41 +88,6 @@ export class WebDAVSync {
   }
 
   private async makeRequest(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000): Promise<RequestResult> {
-    if (!this.allowSelfSigned || this.isMobile) return this.makeRequestViaObsidian(method, fullUrl, headers, body, timeoutMs);
-
-    const rejectUnauthorized = false;
-    let lastErr: Error | undefined;
-    for (let nodeRetries = 0; nodeRetries < 3; nodeRetries++) {
-      try {
-        const res = await this.makeRequestViaNode(method, fullUrl, headers, body, timeoutMs, rejectUnauthorized);
-        if (res.status >= 500) {
-          if (nodeRetries < 2) {
-            await WebDAVSync.sleep(1000 * (nodeRetries + 1));
-            continue;
-          }
-          console.warn(`[makeRequest] Node.js returned HTTP ${res.status} after ${nodeRetries + 1} retries for ${method} ${fullUrl}, falling back to Obsidian`);
-          return this.makeRequestViaObsidian(method, fullUrl, headers, body, timeoutMs);
-        }
-        return res;
-      } catch (e) {
-        lastErr = e instanceof Error ? e : new Error(String(e));
-        const msg = lastErr.message;
-        if (msg.includes('certificate') || msg.includes('CERT') || msg.includes('UNABLE_TO_VERIFY')) {
-          setEnvTlsReject(true);
-          return this.makeRequestViaObsidian(method, fullUrl, headers, body, timeoutMs);
-        }
-        if (nodeRetries < 2) {
-          console.warn(`[makeRequest] Node.js attempt ${nodeRetries + 1} failed for ${method} ${fullUrl}: ${msg}, retrying...`);
-          await WebDAVSync.sleep(2000 * (nodeRetries + 1));
-          continue;
-        }
-      }
-    }
-    console.warn(`[makeRequest] Node.js failed after 3 retries for ${method} ${fullUrl}, falling back to Obsidian: ${lastErr?.message || 'unknown error'}`);
-    return this.makeRequestViaObsidian(method, fullUrl, headers, body, timeoutMs);
-  }
-
-  private async makeRequestViaObsidian(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs?: number): Promise<RequestResult> {
     const obsHeaders = { ...headers };
     delete obsHeaders['Content-Length'];
     delete obsHeaders['OC-Chunked'];
@@ -148,62 +106,6 @@ export class WebDAVSync {
     return { status: response.status, headers: headersLower, arrayBuffer: response.arrayBuffer, text: response.text };
   }
 
-  // Dynamic import avoids bundling Node.js built-ins on mobile; only invoked on desktop
-  /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument -- Node.js http/https types not resolvable by eslint when moduleResolution:bundler */
-  private async makeRequestViaNode(method: string, fullUrl: string, headers: Record<string, string>, body?: ArrayBuffer, timeoutMs = 30000, rejectUnauthorized = false): Promise<RequestResult> {
-    const httpsMod = await import('https');
-    const httpMod = await import('http');
-    return new Promise<RequestResult>((resolve, reject) => {
-      const urlObj = new URL(fullUrl);
-      const isHttps = urlObj.protocol === 'https:';
-
-      if (body && !headers['Content-Length']) {
-        headers['Content-Length'] = String(body.byteLength);
-      }
-      const opts: http.RequestOptions = {
-        hostname: urlObj.hostname,
-        port: parseInt(urlObj.port || (isHttps ? '443' : '80'), 10),
-        path: urlObj.pathname + urlObj.search,
-        method,
-        headers: { 'User-Agent': 'Obsidian WebDAV Sync Plugin/1.0', ...headers },
-      };
-
-      const onResponse = (res: http.IncomingMessage) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          const data = Buffer.concat(chunks);
-          const text = (() => { try { return data.toString('utf-8'); } catch { return ''; } })();
-          const headersOut: Record<string, string> = {};
-          for (const [k, v] of Object.entries(res.headers ?? {})) {
-            headersOut[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v ?? '');
-          }
-          resolve({ status: res.statusCode ?? 500, headers: headersOut, arrayBuffer: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), text });
-        });
-      };
-
-      const onError = (err: Error) => {
-        if (err.message?.includes('EPIPE') || err.message?.includes('socket hang up')) {
-          const bodySize = body ? ` (body size: ${body.byteLength} bytes)` : '';
-          reject(new Error(`Connection closed by server during request${bodySize} — EPIPE/socket hang up. The server may have a request size limit or does not support the requested operation.`));
-        } else {
-          reject(new Error(String(err)));
-        }
-      };
-
-      let req: http.ClientRequest;
-      if (isHttps) {
-        req = httpsMod.request({ ...opts, rejectUnauthorized, agent: new httpsMod.Agent({ rejectUnauthorized }) }, onResponse);
-      } else {
-        req = httpMod.request(opts, onResponse);
-      }
-      req.on('error', onError);
-      req.setTimeout(timeoutMs, () => { req.destroy(new Error('Request timeout')); });
-      if (body) req.write(Buffer.from(body));
-      req.end();
-    });
-  }
-  /* eslint-enable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument -- Node.js http/https types not resolvable by eslint when moduleResolution:bundler */
   async testConnection(): Promise<void> {
     const response = await this.makeRequest('PROPFIND', this.url, { Depth: '0', Authorization: this.getAuthHeader() });
     if (response.status >= 400) throw new Error(`WebDAV connection failed (HTTP ${response.status})`);
@@ -659,18 +561,5 @@ export class WebDAVSync {
     return href || null;
   }
 }
-
-/* eslint-disable @typescript-eslint/no-unsafe-member-access -- process.env cast needed for env var mutation */
-let envTlsRejectSet = false;
-function setEnvTlsReject(state: boolean): void {
-  if (state && !envTlsRejectSet) {
-    (process.env as Record<string, string>)['NODE_TLS_REJECT_UNAUTHORIZED'] = '0';
-    envTlsRejectSet = true;
-  } else if (!state && envTlsRejectSet) {
-    delete (process.env as Record<string, string>)['NODE_TLS_REJECT_UNAUTHORIZED'];
-    envTlsRejectSet = false;
-  }
-}
-/* eslint-enable @typescript-eslint/no-unsafe-member-access -- process.env cast needed for env var mutation */
 
 

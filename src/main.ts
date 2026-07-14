@@ -106,6 +106,7 @@ export default class ObsyncPlugin extends Plugin {
   private _origVaultReadBinary: ((file: TFile) => Promise<ArrayBuffer>) | null = null;
   private _origShellOpenPath: ((path: string) => Promise<string>) | null = null;
   private _handlingFileOpen = new Set<string>();
+  private _pendingEvents: Array<{ type: string; file: TAbstractFile; oldPath?: string }> = [];
 
   async onload(): Promise<void> {
     this.isMobile = (this.app as { isMobile?: boolean }).isMobile ?? false;
@@ -122,16 +123,14 @@ export default class ObsyncPlugin extends Plugin {
       this.settings.webdavUrl,
       this.settings.webdavUsername,
       this.settings.webdavPassword,
-      this.settings.allowSelfSignedCerts,
       this.settings.chunkSizeMb,
-      this.isMobile,
     );
 
     await this.loadKeys();
 
     this.registerEvent(this.app.vault.on('delete', (file: TAbstractFile) => {
-      if (this.isSyncing) return;
       if (this.isExcluded(file.path)) return;
+      if (this.isSyncing) { this._pendingEvents.push({ type: 'delete', file }); return; }
       if (file instanceof TFolder) {
         this.journal.record('dir_deleted', file.path);
       } else if (file instanceof TFile) {
@@ -140,23 +139,24 @@ export default class ObsyncPlugin extends Plugin {
     }));
 
     this.registerEvent(this.app.vault.on('modify', (file: TFile) => {
-      if (this.isSyncing) return;
       if (this.isExcluded(file.path)) return;
+      if (this.isSyncing) { this._pendingEvents.push({ type: 'modify', file }); return; }
       this.journal.record('file_updated', file.path);
       this.scheduleAutoSync(file);
     }));
 
     this.registerEvent(this.app.vault.on('create', (file: TAbstractFile) => {
-      if (this.isSyncing) return;
       if (this.isExcluded(file.path)) return;
+      if (this.isSyncing) { this._pendingEvents.push({ type: 'create', file }); return; }
       if (file instanceof TFile) {
         this.journal.record('file_updated', file.path);
+        this.scheduleAutoSync(file);
       }
     }));
 
     this.registerEvent(this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
-      if (this.isSyncing) return;
       if (this.isExcluded(file.path) && this.isExcluded(oldPath)) return;
+      if (this.isSyncing) { this._pendingEvents.push({ type: 'rename', file, oldPath }); return; }
       if (file instanceof TFile) {
         this.journal.record('file_deleted', oldPath);
         this.journal.record('file_updated', file.path);
@@ -302,6 +302,7 @@ export default class ObsyncPlugin extends Plugin {
       })();
       this._origShellOpenPath = null;
     }
+    if (this._pendingEvents.length > 0) this.flushPendingEvents();
     void this.journal?.save();
   }
 
@@ -763,9 +764,7 @@ export default class ObsyncPlugin extends Plugin {
         this.settings.webdavUrl,
         this.settings.webdavUsername,
         this.settings.webdavPassword,
-        this.settings.allowSelfSignedCerts,
         this.settings.chunkSizeMb,
-        this.isMobile,
       );
 
       await this.syncClient.testConnection();
@@ -957,14 +956,9 @@ export default class ObsyncPlugin extends Plugin {
         console.error(`[sync] crypto self-test FAILED:`, e);
       }
 
-      // Delete corrupted remote manifest (encrypted with wrong public key from previous buggy state)
-      try {
-        await this.syncClient.deleteFile(REMOTE_MANIFEST_PATH);
-        console.log('[sync] Deleted corrupted remote manifest');
-      } catch { /* file may not exist */ }
-
       /* Download remote manifest for SHA-based download skip and segment cache */
       const remoteShaByVaultPath = new Map<string, string>();
+      let remoteManifestOk = false;
       try {
         const rm = await this.downloadManifestFromRemote();
         if (rm) {
@@ -979,9 +973,19 @@ export default class ObsyncPlugin extends Plugin {
             }
             this.buildSegmentMaps();
           }
+          remoteManifestOk = true;
         }
       } catch (e) {
         console.warn('Failed to load remote manifest for SHA comparison:', e);
+      }
+
+      // Delete remote manifest only if it's corrupted (fails to decrypt/parse),
+      // so it gets re-uploaded with the correct key on next sync
+      if (!remoteManifestOk) {
+        try {
+          await this.syncClient.deleteFile(REMOTE_MANIFEST_PATH);
+          console.log('[sync] Deleted corrupted remote manifest');
+        } catch { /* file may not exist */ }
       }
 
       /* ── PULL (Remote → Local) ── */
@@ -1219,10 +1223,16 @@ export default class ObsyncPlugin extends Plugin {
         }
       }
 
-      /* Cleanup: remote dirs never tracked → DELETE */
+      /* Remote dirs not tracked → delete only those that are also absent locally */
       const trackedRemotePaths = new Set(Object.values(this.syncManifest.dirs).map(e => e.remotePath));
       for (const remoteDir of remoteDirs) {
         if (remoteDir === '' || trackedRemotePaths.has(remoteDir)) continue;
+        // Double-check: only delete if the corresponding local dir also doesn't exist
+        const vaultDir = await this.remoteDirToVault(remoteDir).catch(() => null);
+        if (vaultDir) {
+          const localDir = this.app.vault.getAbstractFileByPath(vaultDir);
+          if (localDir instanceof TFolder) continue; // local still exists → do NOT delete remote
+        }
         try {
           await this.syncClient.deleteFile(remoteDir);
           remoteDel++;
@@ -1278,7 +1288,42 @@ export default class ObsyncPlugin extends Plugin {
       this.isSyncing = false;
       this.pushTotal = 0;
       this.pushCurrent = 0;
+      this.flushPendingEvents();
       window.setTimeout(() => { if (!this.isSyncing) this.setStatus(''); }, 8000);
+    }
+  }
+
+  private flushPendingEvents(): void {
+    const events = this._pendingEvents.splice(0);
+    for (const ev of events) {
+      try {
+        switch (ev.type) {
+          case 'delete':
+            if (ev.file instanceof TFolder) {
+              this.journal.record('dir_deleted', ev.file.path);
+            } else if (ev.file instanceof TFile) {
+              this.journal.record('file_deleted', ev.file.path);
+            }
+            break;
+          case 'modify':
+          case 'create':
+            if (ev.file instanceof TFile) {
+              this.journal.record('file_updated', ev.file.path);
+              this.scheduleAutoSync(ev.file);
+            }
+            break;
+          case 'rename':
+            if (ev.file instanceof TFile) {
+              this.journal.record('file_deleted', ev.oldPath!);
+              this.journal.record('file_updated', ev.file.path);
+            } else if (ev.file instanceof TFolder) {
+              this.journal.record('dir_deleted', ev.oldPath!);
+            }
+            break;
+        }
+      } catch (e) {
+        console.error('[flushEvents] failed:', ev, e);
+      }
     }
   }
 
@@ -1294,9 +1339,7 @@ export default class ObsyncPlugin extends Plugin {
         this.settings.webdavUrl,
         this.settings.webdavUsername,
         this.settings.webdavPassword,
-        this.settings.allowSelfSignedCerts,
         this.settings.chunkSizeMb,
-        this.isMobile,
       );
 
       new Notice('Restoring...');
@@ -1367,6 +1410,7 @@ export default class ObsyncPlugin extends Plugin {
       console.error('Restore failed:', e);
     } finally {
       this.isSyncing = false;
+      this.flushPendingEvents();
     }
   }
 
@@ -1404,7 +1448,7 @@ export default class ObsyncPlugin extends Plugin {
         await this.saveSettings();
         this.cryptoManager = new CryptoManager();
         await this.loadKeys();
-        this.syncClient.updateConfig(this.settings.webdavUrl, this.settings.webdavUsername, this.settings.webdavPassword, this.settings.allowSelfSignedCerts, this.settings.chunkSizeMb, this.isMobile);
+        this.syncClient.updateConfig(this.settings.webdavUrl, this.settings.webdavUsername, this.settings.webdavPassword, this.settings.chunkSizeMb);
         new Notice('Config imported successfully');
         this.settingsTab?.display();
       } catch (e) {

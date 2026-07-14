@@ -26,7 +26,7 @@ export const DEFAULT_SETTINGS: ObsyncSettings = {
   publicKey: '',
   secretKey: '',
   excludePaths: '<configDir>/plugins/,.trash/',
-  allowSelfSignedCerts: false,
+  allowSelfSignedCerts: true,
   autoSyncOnSave: false,
   chunkSizeMb: 90,
   verboseLog: false,
@@ -90,9 +90,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
               this.plugin.settings.webdavUrl,
               this.plugin.settings.webdavUsername,
               this.plugin.settings.webdavPassword,
-              this.plugin.settings.allowSelfSignedCerts,
               this.plugin.settings.chunkSizeMb,
-              (this.plugin as { isMobile?: boolean }).isMobile ?? false,
             );
             await this.plugin.syncClient.testConnection();
             new Notice('WebDAV connection successful');
@@ -103,17 +101,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Allow Self-Signed Certificates')
-      .setDesc((this.plugin as { isMobile?: boolean }).isMobile ? 'Not available on mobile' : 'Disable TLS certificate verification (for WebDAV servers with self-signed certificates). Warning: reduces connection security.')
+      .setDesc('Note: Obsidian\'s built-in request API may not support bypassing TLS in all environments. If the connection fails, try adding the certificate to your system keychain instead.')
       .addToggle(toggle => toggle
-        .setValue((this.plugin as { isMobile?: boolean }).isMobile ? false : this.plugin.settings.allowSelfSignedCerts)
-        .setDisabled((this.plugin as { isMobile?: boolean }).isMobile ?? false)
+        .setValue(this.plugin.settings.allowSelfSignedCerts)
         .onChange(async value => {
           this.plugin.settings.allowSelfSignedCerts = value;
           await this.plugin.saveSettings();
         }));
-    if ((this.plugin as { isMobile?: boolean }).isMobile && this.plugin.settings.allowSelfSignedCerts) {
-      this.plugin.settings.allowSelfSignedCerts = false;
-    }
 
     new Setting(containerEl).setName('Post-Quantum Keys').setHeading();
 

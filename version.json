@@ -1,4 +1,8 @@
 {
+  "2.0.14": {
+    "minAppVersion": "1.6.6",
+    "description": "Fix multi-device sync: download remote manifest before deleting, buffer events during sync, remove Node.js https fallback (unavailable in Electron renderer)"
+  },
   "2.0.13": {
     "minAppVersion": "1.6.6",
     "description": "Replace static Node.js builtin imports (https, http) with dynamic import() to eliminate 'Do not import Node.js builtin module' warnings"
